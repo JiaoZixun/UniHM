@@ -16,13 +16,14 @@ This is the offical code repo for **ICLR 2026** paper **UniHM: Unified Dexterous
 
 # Plan
 
+
 - [√] Paper Released.
-- [√] Code.
 - [√] Pretrained Weights.
 - [√] Dataset.
 - [√] Quick Satrt
 - [√] Weights of UniHM
 - [√] Real-World SetUP
+- [ ] Code. (In progress, almost ready.)
 
 Any Question, feel free to contact zhangzhh2024@shanghaitech.edu.cn
 
