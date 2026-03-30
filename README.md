@@ -10,7 +10,7 @@ This is the offical code repo for **ICLR 2026** paper **UniHM: Unified Dexterous
 
 # Disclaimers
 - Code Quality Level: Tired grad student, lots of hard code in my repo
-- Training Enviroment: A800 80G GPUs
+- Training Enviroment: A100 80G GPUs
 - Questions: please drop me an email, it is the fastest way to get feedback
 
 
