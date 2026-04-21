@@ -4,6 +4,9 @@
 
 """Wrapper layer for manopth ManoLayer."""
 
+import os
+from pathlib import Path
+
 import torch
 
 from torch.nn import Module
@@ -13,7 +16,7 @@ from manopth.manolayer import ManoLayer
 class MANOLayer(Module):
     """Wrapper layer for manopth ManoLayer."""
 
-    def __init__(self, side, betas):
+    def __init__(self, side, betas, mano_root=None):
         """Constructor.
         Args:
           side: MANO hand type. 'right' or 'left'.
@@ -23,11 +26,17 @@ class MANOLayer(Module):
 
         self._side = side
         self._betas = betas
+        if mano_root is None:
+            mano_root = os.environ.get("UNIHM_MANO_MODEL_DIR", "../../dex-ycb-toolkit/manopth/mano/models")
+        mano_root = str(Path(mano_root).expanduser())
+        if not Path(mano_root).exists():
+            raise FileNotFoundError(f"MANO model directory not found: {mano_root}")
+
         self._mano_layer = ManoLayer(
             flat_hand_mean=False,
             ncomps=45,
             side=self._side,
-            mano_root="../../dex-ycb-toolkit/manopth/mano/models",
+            mano_root=mano_root,
             use_pca=True,
         )
 

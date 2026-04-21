@@ -34,10 +34,20 @@ class RetargetingProcessor:
         self,
         robot_names: List[RobotName],
         hand_type: HandType,
+        urdf_dir: Optional[str] = None,
+        mano_model_dir: Optional[str] = None,
     ):
         sapien.render.set_log_level("error")
         scene = sapien.Scene()
         self.scene = scene
+
+        if urdf_dir:
+            urdf_root = Path(urdf_dir).expanduser()
+            if not urdf_root.exists():
+                raise FileNotFoundError(f"Retargeting URDF directory does not exist: {urdf_root}")
+            RetargetingConfig.set_default_urdf_dir(str(urdf_root))
+
+        self.mano_model_dir = mano_model_dir
 
         self.robot_names = robot_names
         self.retargetings: List[SeqRetargeting] = []
@@ -113,7 +123,7 @@ class RetargetingProcessor:
         """
         hand_shape = data["hand_shape"]
         extrinsic_mat = data["extrinsics"]
-        self.mano_layer = MANOLayer("right", hand_shape.astype(np.float32))
+        self.mano_layer = MANOLayer("right", hand_shape.astype(np.float32), mano_root=self.mano_model_dir)
         pose_vec = pt.pq_from_transform(extrinsic_mat)
         # In HandViewer, camera_pose is defined as the inverse (Camera -> World)
         # extrinsic_mat is World -> Camera
