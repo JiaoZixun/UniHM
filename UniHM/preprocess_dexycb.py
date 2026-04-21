@@ -69,10 +69,10 @@ if __name__ == "__main__":
     p.add_argument("--output-dir", type=str, default="/data1/jiaozx/UniHM/processed_dexycb")
     p.add_argument("--hand-type", type=str, default="right", choices=["right", "left"])
     p.add_argument("--retargeting-urdf-dir", type=str,
-                   default="/data1/jiaozx/dex-retargeting/asserts/robots/hands",
+                   default="/public/home/jiaozixun/dex-retargeting/assets/robots/hands",
                    help="Root directory containing hand URDF subfolders, e.g. .../robots/hands")
     p.add_argument("--mano-model-dir", type=str,
-                   default="/data1/jiaozx/manopth/mano/models",
+                   default="/public/home/jiaozixun/UniHuman2Rob/manopth/mano/models",
                    help="Directory containing MANO_LEFT.pkl and MANO_RIGHT.pkl")
     args = p.parse_args()
     process(args)
