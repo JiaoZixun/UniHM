@@ -151,7 +151,7 @@ def train(args):
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser("Train shared-latent VAE on DexYCB sequences")
-    p.add_argument("--seq-glob", type=str, default="/data1/jiaozx/UniHM/processed_dexycb/*.npz")
+    p.add_argument("--seq-glob", type=str, default="/public/home/jiaozixun/UniHM/processed_dexycb/*.npz")
     p.add_argument("--device", type=str, default="cuda")
     p.add_argument("--epochs", type=int, default=200)
     p.add_argument("--batch-size", type=int, default=8)
@@ -161,7 +161,7 @@ if __name__ == "__main__":
     p.add_argument("--lr", type=float, default=1e-4)
     p.add_argument("--weight-decay", type=float, default=1e-4)
     p.add_argument("--beta-kl", type=float, default=0.01)
-    p.add_argument("--save-ckpt", type=str, default="/data1/jiaozx/UniHM/checkpoints/vae_shared_best.pth")
-    p.add_argument("--log-dir", type=str, default="/data1/jiaozx/UniHM/logs")
+    p.add_argument("--save-ckpt", type=str, default="/public/home/jiaozixun/UniHM/checkpoints/vae_shared_best.pth")
+    p.add_argument("--log-dir", type=str, default="/public/home/jiaozixun/UniHM/logs")
     args = p.parse_args()
     train(args)
