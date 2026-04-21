@@ -1,6 +1,18 @@
 import argparse
 import os
 import numpy as np
+
+for name, value in {
+    "bool": bool,
+    "int": int,
+    "float": float,
+    "complex": complex,
+    "object": object,
+    "unicode": str,
+    "str": str,
+}.items():
+    if not hasattr(np, name):
+        setattr(np, name, value)
 from tqdm import tqdm
 
 from utils.dataset import DexYCBVideoDataset, YCB_CLASSES
