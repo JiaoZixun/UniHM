@@ -9,6 +9,7 @@ import numpy as np
 from matplotlib import animation
 
 from UniHM.dataset import load_dataset_squential
+from UniHM.optimizer.utils import posquat_to_T, transform_points
 
 
 HAND_EDGES = [
@@ -30,28 +31,9 @@ ROBOT_FIELDS = [
 ]
 
 
-def _quat_to_rotmat_xyzw(q):
-    q = np.asarray(q, dtype=np.float64).reshape(-1)
-    x, y, z, w = q
-    n = np.linalg.norm(q)
-    if n < 1e-12:
-        return np.eye(3)
-    x, y, z, w = q / n
-    return np.array(
-        [
-            [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
-            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
-            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
-        ],
-        dtype=np.float64,
-    )
-
-
 def _transform_object_points(local_points, obj_pose_7):
-    q = obj_pose_7[:4]
-    t = obj_pose_7[4:7]
-    r = _quat_to_rotmat_xyzw(q)
-    return local_points @ r.T + t[None, :]
+    t_obj = posquat_to_T(obj_pose_7)
+    return transform_points(t_obj, local_points)
 
 
 def _safe_robot_ee(data, field):
@@ -62,6 +44,13 @@ def _safe_robot_ee(data, field):
     except Exception:
         return None
     return item.get("ee_target", None)
+
+
+def _motion_ratio(points_seq, thr=1e-4):
+    if points_seq.shape[0] < 2:
+        return 0.0, 0.0, 0.0
+    diff = np.linalg.norm(np.diff(points_seq, axis=0), axis=1)
+    return float(diff.mean()), float(diff.max()), float((diff > thr).mean())
 
 
 def render_video(npz_path: str, out_dir: str, fps: int = 20, stride: int = 1, max_frames: int = 0):
@@ -96,6 +85,23 @@ def render_video(npz_path: str, out_dir: str, fps: int = 20, stride: int = 1, ma
     os.makedirs(out_dir, exist_ok=True)
     out_video = os.path.join(out_dir, f"{stem}_gt_alignment.mp4")
 
+    # Motion diagnostics: verify each modality is changing over time.
+    hand_center = hand_joints.mean(axis=1)
+    hand_m = _motion_ratio(hand_center)
+    obj_center = obj_pose_seq[:, 4:7]
+    obj_m = _motion_ratio(obj_center)
+    print(
+        f"[motion] {stem} hand(mean/max/moving_ratio)={hand_m[0]:.6f}/{hand_m[1]:.6f}/{hand_m[2]:.3f}, "
+        f"object={obj_m[0]:.6f}/{obj_m[1]:.6f}/{obj_m[2]:.3f}"
+    )
+    for alias, ee in ee_data.items():
+        ee_center = ee.mean(axis=1)
+        ee_m = _motion_ratio(ee_center)
+        print(
+            f"[motion] {stem} {alias}_ee(mean/max/moving_ratio)="
+            f"{ee_m[0]:.6f}/{ee_m[1]:.6f}/{ee_m[2]:.3f}"
+        )
+
     fig = plt.figure(figsize=(8, 7))
     ax = fig.add_subplot(1, 1, 1, projection="3d")
     ax.set_title("GT alignment: hand(21kps) + robot ee + object pointcloud")
@@ -113,6 +119,20 @@ def render_video(npz_path: str, out_dir: str, fps: int = 20, stride: int = 1, ma
         "inspire": "tab:pink",
     }
 
+    # Fixed world bounds so movement is visually observable across frames.
+    min_xyz = np.min(hand_joints.reshape(-1, 3), axis=0)
+    max_xyz = np.max(hand_joints.reshape(-1, 3), axis=0)
+    obj_centers = obj_pose_seq[:, 4:7]
+    min_xyz = np.minimum(min_xyz, obj_centers.min(axis=0))
+    max_xyz = np.maximum(max_xyz, obj_centers.max(axis=0))
+    for ee in ee_data.values():
+        min_xyz = np.minimum(min_xyz, ee.reshape(-1, 3).min(axis=0))
+        max_xyz = np.maximum(max_xyz, ee.reshape(-1, 3).max(axis=0))
+    margin = 0.05
+    min_xyz -= margin
+    max_xyz += margin
+    tail_len = min(20, len(frame_ids))
+
     def update(k):
         fi = frame_ids[k]
         ax.cla()
@@ -120,6 +140,9 @@ def render_video(npz_path: str, out_dir: str, fps: int = 20, stride: int = 1, ma
         ax.set_xlabel("x")
         ax.set_ylabel("y")
         ax.set_zlabel("z")
+        ax.set_xlim(min_xyz[0], max_xyz[0])
+        ax.set_ylim(min_xyz[1], max_xyz[1])
+        ax.set_zlim(min_xyz[2], max_xyz[2])
 
         joints = hand_joints[fi]
         ax.scatter(joints[:, 0], joints[:, 1], joints[:, 2], s=12, c="k", label="hand_21kps")
@@ -132,15 +155,22 @@ def render_video(npz_path: str, out_dir: str, fps: int = 20, stride: int = 1, ma
                 c="k",
                 alpha=0.85,
             )
+        st = max(0, fi - tail_len)
+        hand_traj = hand_center[st : fi + 1]
+        ax.plot(hand_traj[:, 0], hand_traj[:, 1], hand_traj[:, 2], c="k", linewidth=1.0, alpha=0.4)
 
         obj_w = _transform_object_points(object_points_local, obj_pose_seq[fi])
         obj_sub = obj_w[:: max(1, len(obj_w) // 2000)]
         ax.scatter(obj_sub[:, 0], obj_sub[:, 1], obj_sub[:, 2], s=1, c="gray", alpha=0.35, label="object_pc")
+        obj_traj = obj_centers[st : fi + 1]
+        ax.plot(obj_traj[:, 0], obj_traj[:, 1], obj_traj[:, 2], c="tab:gray", linewidth=1.0, alpha=0.7)
 
         for alias, ee in ee_data.items():
             if fi >= ee.shape[0]:
                 continue
             pts = ee[fi]
+            ee_traj = ee.mean(axis=1)[st : fi + 1]
+            ax.plot(ee_traj[:, 0], ee_traj[:, 1], ee_traj[:, 2], c=colors.get(alias, None), linewidth=0.9, alpha=0.6)
             ax.scatter(
                 pts[:, 0], pts[:, 1], pts[:, 2],
                 s=16, c=colors.get(alias, None), alpha=0.9, label=f"{alias}_ee"
