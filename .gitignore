@@ -4,4 +4,5 @@ __pycache__
 tests
 datasets
 model
-UniHM/processed_dexycb
+processed_dexycb
+gt_viz
