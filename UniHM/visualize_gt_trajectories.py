@@ -114,8 +114,8 @@ def visualize_one(npz_path: str, out_dir: str):
 def main():
     parser = argparse.ArgumentParser("Visualize GT hand/robot/object trajectories from processed npz")
     parser.add_argument("--npz", type=str, default="", help="Single npz file path")
-    parser.add_argument("--glob", type=str, default="", help="Glob for npz files, e.g. /path/*.npz")
-    parser.add_argument("--out-dir", type=str, default="./gt_viz", help="Directory for rendered PNG files")
+    parser.add_argument("--glob", type=str, default="/public/home/jiaozixun/UniHM/processed_dexycb/*.npz", help="Glob for npz files, e.g. /path/*.npz")
+    parser.add_argument("--out-dir", type=str, default="/public/home/jiaozixun/UniHM/gt_viz", help="Directory for rendered PNG files")
     parser.add_argument("--max-files", type=int, default=10, help="Max files to visualize when --glob is set")
     args = parser.parse_args()
 
