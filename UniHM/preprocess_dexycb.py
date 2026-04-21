@@ -1,6 +1,18 @@
 import argparse
 import os
 import numpy as np
+
+for name, value in {
+    "bool": bool,
+    "int": int,
+    "float": float,
+    "complex": complex,
+    "object": object,
+    "unicode": str,
+    "str": str,
+}.items():
+    if not hasattr(np, name):
+        setattr(np, name, value)
 from tqdm import tqdm
 
 from utils.dataset import DexYCBVideoDataset, YCB_CLASSES
@@ -56,7 +68,7 @@ if __name__ == "__main__":
     p.add_argument("--output-dir", type=str, default="/data1/jiaozx/UniHM/processed_dexycb")
     p.add_argument("--hand-type", type=str, default="right", choices=["right", "left"])
     p.add_argument("--retargeting-urdf-dir", type=str,
-                   default="/data1/jiaozx/dex-retargeting/assets/robots/hands",
+                   default="/data1/jiaozx/dex-retargeting/asserts/robots/hands",
                    help="Root directory containing hand URDF subfolders, e.g. .../robots/hands")
     args = p.parse_args()
     process(args)
