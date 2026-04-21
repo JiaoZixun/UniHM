@@ -5,6 +5,14 @@ from scipy import linalg
 import numpy as np
 from scipy.spatial import cKDTree, Delaunay
 import tqdm
+from UniHM.metrics.common_metrics import (
+    mpjpe as metric_mpjpe,
+    fhlt as metric_fhlt,
+    fhlr as metric_fhlr,
+    fid as metric_fid,
+    smoothness_l2,
+    rollout_drift,
+)
 
 def load_data(file):
     """Load per-sample npz produced by forward.py including new generation2 and generation_sim.
@@ -68,66 +76,16 @@ def load_data(file):
 
 
 def mpjpe(pred, gt):
-    """Mean Per Joint Position Error.
-    Same as before: ignore first 6 dims (e.g., global pose) and truncate to 72 frames.
-    """
-    if pred.ndim == 3:
-        pred = pred.mean(0)
-    if gt.ndim == 3:
-        gt = gt.mean(0)
-    T = min(72, getattr(pred, 'shape', [0])[0], getattr(gt, 'shape', [0])[0])
-    if T == 0:
-        return 0.0
-    diff = np.abs(pred[:T, 6:] - gt[:T, 6:])
-    return float(diff.sum() / T)
+    return metric_mpjpe(pred, gt)
 
 def fhlt(pred, gt):
-    """First-Hand Left-Translation error (FH-LT): mean absolute diff over first 3 dims (<=72 frames)."""
-    if pred.ndim == 3:
-        pred = pred.mean(0)
-    if gt.ndim == 3:
-        gt = gt.mean(0)
-    T = min(72, getattr(pred, 'shape', [0])[0], getattr(gt, 'shape', [0])[0])
-    if T == 0:
-        return 0.0
-    diff = np.abs(pred[:T, :3] - gt[:T, :3])
-    return float(diff.sum() / T)
+    return metric_fhlt(pred, gt)
 
 def fhlr(pred, gt):
-    """First-Hand Left-Rotation error (FH-LR): mean absolute diff over dims 3:6 (<=72 frames)."""
-    if pred.ndim == 3:
-        pred = pred.mean(0)
-    if gt.ndim == 3:
-        gt = gt.mean(0)
-    T = min(72, getattr(pred, 'shape', [0])[0], getattr(gt, 'shape', [0])[0])
-    if T == 0:
-        return 0.0
-    diff = np.abs(pred[:T, 3:6] - gt[:T, 3:6])
-    return float(diff.sum() / T)
+    return metric_fhlr(pred, gt)
 
 def fid(pred, gt, eps=1e-6):
-    if pred.ndim == 3:
-        pred_flat = pred.reshape(-1, pred.shape[-1])
-    else:
-        pred_flat = pred
-    if gt.ndim == 3:
-        gt_flat = gt.reshape(-1, gt.shape[-1])
-    else:
-        gt_flat = gt
-    mu1 = np.mean(pred_flat, axis=0)
-    mu2 = np.mean(gt_flat, axis=0)
-    sig1 = np.cov(pred_flat, rowvar=False)
-    sig2 = np.cov(gt_flat, rowvar=False)
-    if sig1.shape == sig2.shape:
-        sig1 += np.eye(sig1.shape[0]) * eps
-        sig2 += np.eye(sig2.shape[0]) * eps
-    covmean, _ = linalg.sqrtm(sig1.dot(sig2), disp=False)
-    if not np.isfinite(covmean).all():
-        covmean = np.eye(sig1.shape[0])
-    if np.iscomplexobj(covmean):
-        covmean = covmean.real
-    fid_value = np.sum((mu1 - mu2)**2) + np.trace(sig1 + sig2 - 2*covmean)
-    return float(fid_value)
+    return metric_fid(pred, gt)
 
 def _aligned_truncate(a, b):
     """Truncate two (T,D) arrays to same min length (<=72). Return views."""
@@ -153,6 +111,7 @@ METRIC_FUNCS = {
     "fhlt": fhlt,
     "fhlr": fhlr,
     "fid": fid,
+    "smoothness": smoothness_l2,
 }
 
 def compute_gt_diversity_between_samples(seq_list):
@@ -201,12 +160,16 @@ def compute_pair_metrics(pred, gt):
     results = {}
     for name, fn in METRIC_FUNCS.items():
         try:
-            if name == "fid":
+            if name in ("fid", "smoothness"):
                 results[name] = fn(pred, gt)
             else:
                 results[name] = fn(pred, gt)
         except Exception:
             results[name] = float('nan')
+    try:
+        results["rollout_drift"] = rollout_drift(pred, gt)
+    except Exception:
+        results["rollout_drift"] = float('nan')
     return results
 
 HANDS = ["allegro", "shadow", "svh"]
@@ -355,4 +318,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
