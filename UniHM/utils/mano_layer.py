@@ -5,12 +5,60 @@
 """Wrapper layer for manopth ManoLayer."""
 
 import os
+import importlib
+import sys
+import types
 from pathlib import Path
 
+import numpy as np
 import torch
 
 from torch.nn import Module
-from manopth.manolayer import ManoLayer
+
+
+def _rodrigues_numpy(src):
+    src = np.asarray(src, dtype=np.float64)
+    if src.shape == (3, 3):
+        trace = np.trace(src)
+        cos_theta = np.clip((trace - 1.0) * 0.5, -1.0, 1.0)
+        theta = np.arccos(cos_theta)
+        if theta < 1e-12:
+            return np.zeros((3, 1), dtype=np.float64), None
+        denom = 2.0 * np.sin(theta)
+        rx = (src[2, 1] - src[1, 2]) / denom
+        ry = (src[0, 2] - src[2, 0]) / denom
+        rz = (src[1, 0] - src[0, 1]) / denom
+        rvec = theta * np.array([[rx], [ry], [rz]], dtype=np.float64)
+        return rvec, None
+
+    rvec = src.reshape(3, 1)
+    theta = np.linalg.norm(rvec)
+    if theta < 1e-12:
+        return np.eye(3, dtype=np.float64), None
+    k = (rvec[:, 0] / theta).astype(np.float64)
+    kx, ky, kz = k
+    k_mat = np.array(
+        [[0.0, -kz, ky], [kz, 0.0, -kx], [-ky, kx, 0.0]],
+        dtype=np.float64,
+    )
+    r = (
+        np.eye(3, dtype=np.float64)
+        + np.sin(theta) * k_mat
+        + (1.0 - np.cos(theta)) * (k_mat @ k_mat)
+    )
+    return r, None
+
+
+def _ensure_cv2_or_stub():
+    try:
+        importlib.import_module("cv2")
+        return
+    except ImportError as err:
+        if "libqt5core" not in str(err).lower():
+            raise
+    cv2_stub = types.ModuleType("cv2")
+    cv2_stub.Rodrigues = _rodrigues_numpy
+    sys.modules["cv2"] = cv2_stub
 
 
 class MANOLayer(Module):
@@ -32,7 +80,9 @@ class MANOLayer(Module):
         if not Path(mano_root).exists():
             raise FileNotFoundError(f"MANO model directory not found: {mano_root}")
 
-        self._mano_layer = ManoLayer(
+        _ensure_cv2_or_stub()
+        mano_layer_cls = importlib.import_module("manopth.manolayer").ManoLayer
+        self._mano_layer = mano_layer_cls(
             flat_hand_mean=False,
             ncomps=45,
             side=self._side,
