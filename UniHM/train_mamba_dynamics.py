@@ -7,7 +7,7 @@ from tqdm import tqdm
 
 from UniHM.SFT.utils import build_seq_dataloaders
 from UniHM.vae.multi_vae import MultiDecoderVAE
-from UniHM.dynamics.mamba import MambaDynamics
+from UniHM.dynamics import build_dynamics
 from UniHM.visualization.training_viz import plot_losses
 
 
@@ -33,7 +33,16 @@ def train(args):
         p.requires_grad = False
 
     train_loader, val_loader = build_seq_dataloaders(args.seq_glob, batch_size=args.batch_size, num_workers=args.num_workers)
-    dyn = MambaDynamics(latent_dim=vae_ckpt["latent_dim"], obj_state_dim=7, d_model=args.d_model, n_layer=args.n_layer).to(device)
+    dyn = build_dynamics(
+        backend=args.dyn_backend,
+        latent_dim=vae_ckpt["latent_dim"],
+        obj_state_dim=7,
+        d_model=args.d_model,
+        n_layer=args.n_layer,
+        n_head=args.n_head,
+        max_len=args.max_len,
+        diffusion_steps=args.diffusion_steps,
+    ).to(device)
     optim = torch.optim.AdamW(dyn.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     hist = {"train_total": [], "train_lat": [], "train_obj": [], "val_total": []}
@@ -55,10 +64,16 @@ def train(args):
 
             z_in, z_gt = z[:, :-1], z[:, 1:]
             o_in, o_gt = obj[:, :-1], obj[:, 1:]
-            pred = dyn(z_in, o_in)
-            lz = F.mse_loss(pred["z_next"], z_gt)
-            lo = F.mse_loss(pred["o_next"], o_gt)
-            loss = lz + args.obj_weight * lo
+            if dyn.backend == "diffusion":
+                losses = dyn.training_loss(z_in, o_in, z_gt, o_gt)
+                loss = losses["loss"]
+                lz = losses["z_loss"]
+                lo = losses["o_loss"]
+            else:
+                pred = dyn(z_in, o_in)
+                lz = F.mse_loss(pred["z_next"], z_gt)
+                lo = F.mse_loss(pred["o_next"], o_gt)
+                loss = lz + args.obj_weight * lo
 
             optim.zero_grad(set_to_none=True)
             loss.backward()
@@ -96,7 +111,16 @@ def train(args):
         if v < best:
             best = v
             os.makedirs(os.path.dirname(args.save_ckpt), exist_ok=True)
-            torch.save({"model": dyn.state_dict(), "latent_dim": vae_ckpt["latent_dim"], "backend": dyn.backend}, args.save_ckpt)
+            torch.save({
+                "model": dyn.state_dict(),
+                "latent_dim": vae_ckpt["latent_dim"],
+                "backend": dyn.backend,
+                "d_model": args.d_model,
+                "n_layer": args.n_layer,
+                "n_head": args.n_head,
+                "max_len": args.max_len,
+                "diffusion_steps": args.diffusion_steps,
+            }, args.save_ckpt)
 
         plot_losses(hist, os.path.join(args.log_dir, "dynamics_losses.png"))
 
@@ -112,6 +136,10 @@ if __name__ == "__main__":
     p.add_argument("--num-workers", type=int, default=4)
     p.add_argument("--d-model", type=int, default=256)
     p.add_argument("--n-layer", type=int, default=4)
+    p.add_argument("--n-head", type=int, default=8)
+    p.add_argument("--max-len", type=int, default=256)
+    p.add_argument("--dyn-backend", type=str, default="mamba", choices=["mamba", "transformer", "diffusion"])
+    p.add_argument("--diffusion-steps", type=int, default=50)
     p.add_argument("--lr", type=float, default=1e-4)
     p.add_argument("--weight-decay", type=float, default=1e-4)
     p.add_argument("--obj-weight", type=float, default=1.0)

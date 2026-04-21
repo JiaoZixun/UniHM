@@ -22,6 +22,7 @@ def process(args):
             RobotName.inspire,
         ],
         hand_type=HandType.right if args.hand_type == "right" else HandType.left,
+        urdf_dir=args.retargeting_urdf_dir,
     )
 
     failed = []
@@ -54,5 +55,8 @@ if __name__ == "__main__":
     p.add_argument("--dexycb-dir", type=str, default="/data1/jiaozx/data/DexYCB_data")
     p.add_argument("--output-dir", type=str, default="/data1/jiaozx/UniHM/processed_dexycb")
     p.add_argument("--hand-type", type=str, default="right", choices=["right", "left"])
+    p.add_argument("--retargeting-urdf-dir", type=str,
+                   default="/data1/jiaozx/dex-retargeting/assets/robots/hands",
+                   help="Root directory containing hand URDF subfolders, e.g. .../robots/hands")
     args = p.parse_args()
     process(args)

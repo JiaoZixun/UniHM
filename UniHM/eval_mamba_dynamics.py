@@ -5,7 +5,7 @@ import torch
 
 from UniHM.SFT.utils import build_seq_dataloaders, DECODER_KEY_ALIASES
 from UniHM.vae.multi_vae import MultiDecoderVAE
-from UniHM.dynamics.mamba import MambaDynamics
+from UniHM.dynamics import build_dynamics
 from UniHM.metrics.common_metrics import mpjpe, fhlt, fhlr, fid, smoothness_l2, rollout_drift
 from UniHM.visualization.training_viz import render_hand_object_sequence
 
@@ -28,7 +28,17 @@ def evaluate(args):
     vae.eval()
 
     dyn_ckpt = torch.load(args.dyn_ckpt, map_location="cpu")
-    dyn = MambaDynamics(latent_dim=dyn_ckpt["latent_dim"], obj_state_dim=7, d_model=args.d_model, n_layer=args.n_layer).to(device)
+    backend = args.dyn_backend if args.dyn_backend else dyn_ckpt.get("backend", "mamba")
+    dyn = build_dynamics(
+        backend=backend,
+        latent_dim=dyn_ckpt["latent_dim"],
+        obj_state_dim=7,
+        d_model=dyn_ckpt.get("d_model", args.d_model),
+        n_layer=dyn_ckpt.get("n_layer", args.n_layer),
+        n_head=dyn_ckpt.get("n_head", args.n_head),
+        max_len=dyn_ckpt.get("max_len", args.max_len),
+        diffusion_steps=dyn_ckpt.get("diffusion_steps", args.diffusion_steps),
+    ).to(device)
     dyn.load_state_dict(dyn_ckpt["model"], strict=False)
     dyn.eval()
 
@@ -101,6 +111,10 @@ if __name__ == "__main__":
     p.add_argument("--num-workers", type=int, default=4)
     p.add_argument("--d-model", type=int, default=256)
     p.add_argument("--n-layer", type=int, default=4)
+    p.add_argument("--n-head", type=int, default=8)
+    p.add_argument("--max-len", type=int, default=256)
+    p.add_argument("--dyn-backend", type=str, default="", choices=["", "mamba", "transformer", "diffusion"])
+    p.add_argument("--diffusion-steps", type=int, default=50)
     p.add_argument("--warm-frames", type=int, default=5)
     p.add_argument("--render-dir", type=str, default="/data1/jiaozx/UniHM/renders/dynamics")
     p.add_argument("--render-every", type=int, default=100)
