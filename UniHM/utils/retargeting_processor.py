@@ -14,7 +14,6 @@ _POS_RETARGET_DIR = _ROOT / "dex-retargeting" / "example" / "position_retargetin
 if str(_POS_RETARGET_DIR) not in sys.path:
     sys.path.append(str(_POS_RETARGET_DIR))
 
-from dex_retargeting import yourdfpy as urdf
 from dex_retargeting.constants import (
     HandType,
     RetargetingType,
@@ -81,28 +80,29 @@ class RetargetingProcessor:
             self.robot_file_names.append(Path(config.urdf_path).stem)
             self.retargetings.append(retargeting)
 
-            urdf_path = Path(config.urdf_path)
-            if "glb" not in urdf_path.stem:
-                urdf_path = urdf_path.with_stem(urdf_path.stem + "_glb")
-            robot_urdf = urdf.URDF.load(
-                str(urdf_path), add_dummy_free_joints=True, build_scene_graph=False
-            )
-            from tempfile import mkdtemp
-
-            temp_dir = mkdtemp(prefix="dex_retargeting-")
-            temp_path = f"{temp_dir}/{urdf_path.name}"
-            robot_urdf.write_xml_file(temp_path)
-
             if loader is None:
                 sapien_joint_names = list(retargeting.joint_names)
                 retarget2sapien = np.arange(len(sapien_joint_names), dtype=int)
             else:
-                robot = loader.load(temp_path)
-                self.robots.append(robot)
-                sapien_joint_names = [joint.name for joint in robot.get_active_joints()]
-                retarget2sapien = np.array(
-                    [retargeting.joint_names.index(n) for n in sapien_joint_names]
-                ).astype(int)
+                try:
+                    robot = loader.load(config.urdf_path)
+                    if robot is None:
+                        raise RuntimeError(f"Failed to load URDF: {config.urdf_path}")
+                    self.robots.append(robot)
+                    sapien_joint_names = [joint.name for joint in robot.get_active_joints()]
+                    retarget2sapien = np.array(
+                        [retargeting.joint_names.index(n) for n in sapien_joint_names]
+                    ).astype(int)
+                except (OSError, RuntimeError) as err:
+                    if "libqt5core" not in str(err).lower():
+                        raise
+                    self.headless_mode = True
+                    print(
+                        f"[RetargetingProcessor] Qt runtime unavailable while loading {config.urdf_path}; "
+                        "falling back to headless joint mapping for this robot."
+                    )
+                    sapien_joint_names = list(retargeting.joint_names)
+                    retarget2sapien = np.arange(len(sapien_joint_names), dtype=int)
             self.sapien_joint_names.append(sapien_joint_names)
             self.retarget2sapien.append(retarget2sapien)
 
