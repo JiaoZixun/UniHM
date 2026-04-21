@@ -1,5 +1,13 @@
 import argparse
 import os
+import traceback
+
+# Force headless-friendly backends to avoid Qt runtime dependency in server environments.
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+os.environ.setdefault("MPLBACKEND", "Agg")
+os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
+os.environ.setdefault("PYGLET_HEADLESS", "true")
+
 import numpy as np
 
 for name, value in {
@@ -37,6 +45,8 @@ def process(args):
         urdf_dir=args.retargeting_urdf_dir,
         mano_model_dir=args.mano_model_dir,
     )
+    if args.joint_mapping_viz_dir:
+        processor.export_joint_mapping_visualization(args.joint_mapping_viz_dir)
 
     failed = []
     for i in tqdm(range(len(dataset)), desc="DexYCB preprocessing"):
@@ -55,9 +65,18 @@ def process(args):
             np.savez_compressed(os.path.join(args.output_dir, f"{capture_name}.npz"), **result)
         except Exception as e:
             failed.append((capture_name, str(e)))
+            if args.print_fail_traceback and len(failed) <= args.max_traceback_print:
+                print(f"\n[preprocess] Failed sample: {capture_name}")
+                traceback.print_exc()
 
     print(f"Processed={len(dataset) - len(failed)}, failed={len(failed)}")
     if failed:
+        unique_errors = {}
+        for _, err in failed:
+            unique_errors[err] = unique_errors.get(err, 0) + 1
+        print("Top failure reasons:")
+        for err, cnt in sorted(unique_errors.items(), key=lambda x: x[1], reverse=True)[:5]:
+            print(f"  ({cnt}) {err}")
         with open(os.path.join(args.output_dir, "failed.txt"), "w") as f:
             for n, e in failed:
                 f.write(f"{n}\t{e}\n")
@@ -74,5 +93,22 @@ if __name__ == "__main__":
     p.add_argument("--mano-model-dir", type=str,
                    default="/public/home/jiaozixun/UniHuman2Rob/manopth/mano/models",
                    help="Directory containing MANO_LEFT.pkl and MANO_RIGHT.pkl")
+    p.add_argument(
+        "--joint-mapping-viz-dir",
+        type=str,
+        default=None,
+        help="Optional output directory for retargeting->output joint mapping CSV/plots.",
+    )
+    p.add_argument(
+        "--print-fail-traceback",
+        action="store_true",
+        help="Print traceback for first few failed samples to diagnose environment issues.",
+    )
+    p.add_argument(
+        "--max-traceback-print",
+        type=int,
+        default=3,
+        help="Max number of sample tracebacks printed when --print-fail-traceback is set.",
+    )
     args = p.parse_args()
     process(args)
