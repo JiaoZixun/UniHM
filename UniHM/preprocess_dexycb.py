@@ -37,6 +37,8 @@ def process(args):
         urdf_dir=args.retargeting_urdf_dir,
         mano_model_dir=args.mano_model_dir,
     )
+    if args.joint_mapping_viz_dir:
+        processor.export_joint_mapping_visualization(args.joint_mapping_viz_dir)
 
     failed = []
     for i in tqdm(range(len(dataset)), desc="DexYCB preprocessing"):
@@ -74,5 +76,11 @@ if __name__ == "__main__":
     p.add_argument("--mano-model-dir", type=str,
                    default="/public/home/jiaozixun/UniHuman2Rob/manopth/mano/models",
                    help="Directory containing MANO_LEFT.pkl and MANO_RIGHT.pkl")
+    p.add_argument(
+        "--joint-mapping-viz-dir",
+        type=str,
+        default=None,
+        help="Optional output directory for retargeting->output joint mapping CSV/plots.",
+    )
     args = p.parse_args()
     process(args)

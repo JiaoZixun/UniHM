@@ -6,7 +6,6 @@ import numpy as np
 import sapien
 import torch
 from pytransform3d import rotations
-from pytransform3d import transformations as pt
 
 from .mano_layer import MANOLayer
 
@@ -38,8 +37,18 @@ class RetargetingProcessor:
         mano_model_dir: Optional[str] = None,
     ):
         sapien.render.set_log_level("error")
-        scene = sapien.Scene()
-        self.scene = scene
+        self.scene: Optional[sapien.Scene] = None
+        self.headless_mode = False
+        try:
+            self.scene = sapien.Scene()
+        except RuntimeError as err:
+            if "rendering device" not in str(err).lower():
+                raise
+            self.headless_mode = True
+            print(
+                "[RetargetingProcessor] Rendering device unavailable, "
+                "falling back to headless mode."
+            )
 
         if urdf_dir:
             urdf_root = Path(urdf_dir).expanduser()
@@ -56,10 +65,11 @@ class RetargetingProcessor:
         self.sapien_joint_names: List[List[str]] = []
         self.robot_file_names: List[str] = []
         self.robots = []
-
-        loader = scene.create_urdf_loader()
-        loader.fix_root_link = True
-        loader.load_multiple_collisions_from_file = True
+        loader = None
+        if self.scene is not None:
+            loader = self.scene.create_urdf_loader()
+            loader.fix_root_link = True
+            loader.load_multiple_collisions_from_file = True
 
         for robot_name in robot_names:
             config_path = get_default_config_path(
@@ -83,12 +93,16 @@ class RetargetingProcessor:
             temp_path = f"{temp_dir}/{urdf_path.name}"
             robot_urdf.write_xml_file(temp_path)
 
-            robot = loader.load(temp_path)
-            self.robots.append(robot)
-            sapien_joint_names = [joint.name for joint in robot.get_active_joints()]
-            retarget2sapien = np.array(
-                [retargeting.joint_names.index(n) for n in sapien_joint_names]
-            ).astype(int)
+            if loader is None:
+                sapien_joint_names = list(retargeting.joint_names)
+                retarget2sapien = np.arange(len(sapien_joint_names), dtype=int)
+            else:
+                robot = loader.load(temp_path)
+                self.robots.append(robot)
+                sapien_joint_names = [joint.name for joint in robot.get_active_joints()]
+                retarget2sapien = np.array(
+                    [retargeting.joint_names.index(n) for n in sapien_joint_names]
+                ).astype(int)
             self.sapien_joint_names.append(sapien_joint_names)
             self.retarget2sapien.append(retarget2sapien)
 
@@ -96,9 +110,71 @@ class RetargetingProcessor:
         self.camera_mat: Optional[np.ndarray] = None
         self.objects: List[sapien.Entity] = []
 
+    def export_joint_mapping_visualization(self, output_dir: str):
+        """Export visualizations for retargeting->output joint mapping.
+
+        The saved figures help verify the mapping used in normal and headless modes.
+        """
+        output_root = Path(output_dir).expanduser()
+        output_root.mkdir(parents=True, exist_ok=True)
+        summary_lines = [
+            f"headless_mode={self.headless_mode}",
+            "Columns: output_joint_name, output_index, source_retarget_index, source_retarget_name",
+        ]
+
+        for robot_name, retargeting, output_joint_names, mapping in zip(
+            self.robot_names, self.retargetings, self.sapien_joint_names, self.retarget2sapien
+        ):
+            robot_label = ROBOT_NAME_MAP[robot_name]
+            mapping = np.asarray(mapping, dtype=int)
+            if len(mapping) != len(output_joint_names):
+                raise ValueError(
+                    f"Mapping length mismatch for {robot_label}: "
+                    f"{len(mapping)} vs {len(output_joint_names)}"
+                )
+
+            csv_path = output_root / f"{robot_label}_joint_mapping.csv"
+            with csv_path.open("w", encoding="utf-8") as f:
+                f.write("output_joint_name,output_index,source_retarget_index,source_retarget_name\n")
+                for i, (joint_name, src_idx) in enumerate(zip(output_joint_names, mapping)):
+                    f.write(f"{joint_name},{i},{src_idx},{retargeting.joint_names[src_idx]}\n")
+
+            summary_lines.append(f"[{robot_label}] rows={len(mapping)} csv={csv_path.name}")
+
+            try:
+                import matplotlib.pyplot as plt
+            except Exception as err:  # pragma: no cover - best effort visualization
+                summary_lines.append(f"[{robot_label}] plot_skipped={err}")
+                continue
+
+            fig, axes = plt.subplots(1, 2, figsize=(14, 4))
+            axes[0].plot(np.arange(len(mapping)), mapping, marker="o", markersize=2, linewidth=1)
+            axes[0].set_title(f"{robot_label}: output index -> retarget index")
+            axes[0].set_xlabel("output joint index")
+            axes[0].set_ylabel("retarget joint index")
+            axes[0].grid(True, alpha=0.3)
+
+            perm = np.zeros((len(mapping), len(mapping)), dtype=np.float32)
+            perm[np.arange(len(mapping)), mapping] = 1.0
+            axes[1].imshow(perm, cmap="viridis", aspect="auto")
+            axes[1].set_title(f"{robot_label}: permutation matrix")
+            axes[1].set_xlabel("retarget joint index")
+            axes[1].set_ylabel("output joint index")
+
+            fig.tight_layout()
+            png_path = output_root / f"{robot_label}_joint_mapping.png"
+            fig.savefig(png_path, dpi=160)
+            plt.close(fig)
+            summary_lines.append(f"[{robot_label}] figure={png_path.name}")
+
+        summary_path = output_root / "joint_mapping_summary.txt"
+        summary_path.write_text("\n".join(summary_lines) + "\n", encoding="utf-8")
+
     def load_object_hand(self, data: Dict):
         self.setup_hand(data)
-        
+        if self.scene is None:
+            return
+
         for actor in self.objects:
             self.scene.remove_actor(actor)
         self.objects = []
@@ -124,11 +200,9 @@ class RetargetingProcessor:
         hand_shape = data["hand_shape"]
         extrinsic_mat = data["extrinsics"]
         self.mano_layer = MANOLayer("right", hand_shape.astype(np.float32), mano_root=self.mano_model_dir)
-        pose_vec = pt.pq_from_transform(extrinsic_mat)
-        # In HandViewer, camera_pose is defined as the inverse (Camera -> World)
-        # extrinsic_mat is World -> Camera
-        self.camera_pose = sapien.Pose(pose_vec[0:3], pose_vec[3:7]).inv()
-        self.camera_mat = self.camera_pose.to_transformation_matrix()
+        # In HandViewer, camera_pose is defined as Camera -> World.
+        # extrinsic_mat is World -> Camera, so invert it directly for headless compatibility.
+        self.camera_mat = np.linalg.inv(extrinsic_mat)
 
     def _compute_joint_positions(self, hand_pose_frame: np.ndarray) -> Optional[np.ndarray]:
         """Compute MANO joint positions in world frame.
