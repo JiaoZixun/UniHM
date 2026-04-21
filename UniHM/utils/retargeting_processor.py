@@ -264,26 +264,32 @@ class RetargetingProcessor:
 
         # Retarget each frame
         robot_qpos_trajectories = [[] for _ in range(len(self.robot_names))]
+        robot_ee_target_trajectories = [[] for _ in range(len(self.robot_names))]
+        mano_joint_trajectory = []
         robot_index = {
             ROBOT_NAME_MAP[name]: i for i, name in enumerate(self.robot_names)
         }
 
         for i in range(start_frame, num_frame):
             joint = self._compute_joint_positions(hand_pose[i])
+            mano_joint_trajectory.append(joint)
             for robotname, retargeting, retarget2sapien in zip(
                 self.robot_names, self.retargetings, self.retarget2sapien
             ):
                 indices = retargeting.optimizer.target_link_human_indices
                 ref_value = joint[indices, :]
                 qpos = retargeting.retarget(ref_value)[retarget2sapien]
-                robot_qpos_trajectories[
-                    robot_index[ROBOT_NAME_MAP[robotname]]
-                ].append(qpos)
+                ridx = robot_index[ROBOT_NAME_MAP[robotname]]
+                robot_qpos_trajectories[ridx].append(qpos)
+                robot_ee_target_trajectories[ridx].append(ref_value)
 
+        result["mano_joint_3d"] = np.array(mano_joint_trajectory)
         for robotname, qpos in zip(self.robot_names, robot_qpos_trajectories):
+            ridx = robot_index[ROBOT_NAME_MAP[robotname]]
             item = {
                 "robot_name": ROBOT_NAME_MAP[robotname],
                 "robot_qpos": np.array(qpos),
+                "ee_target": np.array(robot_ee_target_trajectories[ridx]),
             }
             result[ROBOT_NAME_MAP[robotname]] = item
 

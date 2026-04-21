@@ -62,6 +62,17 @@ def process(args):
             grasp_idx = int(np.argmax(move_score))
             result["grasped_ycb_id"] = data["ycb_ids"][grasp_idx]
             result["grasped_ycb_name"] = ycb_ids_names[grasp_idx]
+            # Lightweight contact heuristic based on distance to grasped object center.
+            # object_pose format in DexYCB is [quat(4), trans(3)] so center is [:, 4:7].
+            if "mano_joint_3d" in result:
+                hand_joints = result["mano_joint_3d"]  # (T, 21, 3)
+                obj_center = result["object_pose"][:, grasp_idx, 4:7]  # (T, 3)
+                hand_to_center = np.linalg.norm(
+                    hand_joints - obj_center[:, None, :], axis=-1
+                )  # (T, 21)
+                min_dist = hand_to_center.min(axis=1)  # (T,)
+                result["contact_min_dist"] = min_dist
+                result["contact_flag"] = (min_dist < args.contact_threshold).astype(np.uint8)
             np.savez_compressed(os.path.join(args.output_dir, f"{capture_name}.npz"), **result)
         except Exception as e:
             failed.append((capture_name, str(e)))
@@ -109,6 +120,12 @@ if __name__ == "__main__":
         type=int,
         default=3,
         help="Max number of sample tracebacks printed when --print-fail-traceback is set.",
+    )
+    p.add_argument(
+        "--contact-threshold",
+        type=float,
+        default=0.12,
+        help="Distance threshold (meters) for heuristic hand-object contact flag.",
     )
     args = p.parse_args()
     process(args)
