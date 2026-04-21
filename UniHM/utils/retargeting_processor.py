@@ -34,10 +34,17 @@ class RetargetingProcessor:
         self,
         robot_names: List[RobotName],
         hand_type: HandType,
+        urdf_dir: Optional[str] = None,
     ):
         sapien.render.set_log_level("error")
         scene = sapien.Scene()
         self.scene = scene
+
+        if urdf_dir:
+            urdf_root = Path(urdf_dir).expanduser()
+            if not urdf_root.exists():
+                raise FileNotFoundError(f"Retargeting URDF directory does not exist: {urdf_root}")
+            RetargetingConfig.set_default_urdf_dir(str(urdf_root))
 
         self.robot_names = robot_names
         self.retargetings: List[SeqRetargeting] = []
