@@ -8,9 +8,9 @@ from UniHM.SFT.utils import build_seq_dataloaders, DECODER_KEY_ALIASES, ROBOT_KE
 from UniHM.vae.multi_vae import MultiDecoderVAE
 from UniHM.metrics.common_metrics import mpjpe, fhlt, fhlr, fid, smoothness_l2, rollout_drift
 from UniHM.visualization.training_viz import render_hand_object_sequence, render_fullbody_gt_pred_video
-from UniHM.utils.mano_layer import MANOLayer
+from utils.mano_layer import MANOLayer
 from dex_retargeting.constants import HandType, RobotName
-from UniHM.utils.retargeting_processor import RetargetingProcessor
+from utils.retargeting_processor import RetargetingProcessor
 
 
 def object_feature_from_pointcloud(pc: torch.Tensor) -> torch.Tensor:
