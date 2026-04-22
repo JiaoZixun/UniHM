@@ -93,11 +93,11 @@ def evaluate(args):
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser("Evaluate shared VAE")
-    p.add_argument("--seq-glob", type=str, default="/data1/jiaozx/UniHM/processed_dexycb/*.npz")
-    p.add_argument("--ckpt", type=str, default="/data1/jiaozx/UniHM/checkpoints/vae_shared_best.pth")
+    p.add_argument("--seq-glob", type=str, default="/public/home/jiaozixun/UniHM/processed_dexycb/*.npz")
+    p.add_argument("--ckpt", type=str, default="/public/home/jiaozixun/UniHM/checkpoints/vae_shared_best.pth")
     p.add_argument("--device", type=str, default="cuda")
     p.add_argument("--num-workers", type=int, default=4)
-    p.add_argument("--render-dir", type=str, default="/data1/jiaozx/UniHM/renders/vae")
+    p.add_argument("--render-dir", type=str, default="/public/home/jiaozixun/UniHM/renders/vae")
     p.add_argument("--render-every", type=int, default=100)
     p.add_argument("--render-stride", type=int, default=5)
     args = p.parse_args()
