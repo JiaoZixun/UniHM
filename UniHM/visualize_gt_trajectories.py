@@ -204,8 +204,8 @@ def render_video(npz_path: str, out_dir: str, fps: int = 20, stride: int = 1, ma
 def main():
     parser = argparse.ArgumentParser("Render GT alignment videos (hand 21kps + robot ee + object pointcloud).")
     parser.add_argument("--npz", type=str, default="", help="Single NPZ file.")
-    parser.add_argument("--glob", type=str, default="", help="Glob pattern for NPZ files.")
-    parser.add_argument("--out-dir", type=str, default="./gt_videos", help="Output directory for MP4 videos.")
+    parser.add_argument("--glob", type=str, default="/public/home/jiaozixun/UniHM/processed_dexycb/*.npz", help="Glob pattern for NPZ files.")
+    parser.add_argument("--out-dir", type=str, default="/public/home/jiaozixun/UniHM/gt_videos", help="Output directory for MP4 videos.")
     parser.add_argument("--max-files", type=int, default=10, help="Maximum files when --glob is used.")
     parser.add_argument("--fps", type=int, default=20, help="Output video FPS.")
     parser.add_argument("--stride", type=int, default=1, help="Frame stride for rendering.")
