@@ -286,13 +286,13 @@ if __name__ == "__main__":
     p.add_argument(
         "--contact-threshold",
         type=float,
-        default=0.12,
+        default=0.008,
         help="Distance threshold (meters) for heuristic hand-object contact flag.",
     )
     p.add_argument(
         "--contact-map-threshold",
         type=float,
-        default=0.02,
+        default=0.008,
         help="Distance threshold (meters) for binary object/joint contact maps from dense dist map.",
     )
     p.add_argument(
