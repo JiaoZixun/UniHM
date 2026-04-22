@@ -6,6 +6,13 @@ from matplotlib import animation
 import numpy as np
 from UniHM.optimizer.utils import posquat_to_T, transform_points
 
+HAND_EDGES = [
+    (0, 1), (1, 2), (2, 3), (3, 4),
+    (0, 5), (5, 6), (6, 7), (7, 8),
+    (0, 9), (9, 10), (10, 11), (11, 12),
+    (0, 13), (13, 14), (14, 15), (15, 16),
+    (0, 17), (17, 18), (18, 19), (19, 20),
+]
 
 def plot_losses(history: Dict[str, List[float]], save_path: str):
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
@@ -160,5 +167,118 @@ def render_multi_robot_comparison_video(
 
     ani = animation.FuncAnimation(fig, update, frames=len(frame_ids), interval=1000.0 / fps, blit=False)
     writer = animation.FFMpegWriter(fps=fps, codec="libx264")
+    ani.save(save_path, writer=writer, dpi=140)
+    plt.close(fig)
+
+
+def render_fullbody_gt_pred_video(
+    save_path: str,
+    mano_joints_world: np.ndarray,
+    gt_ee_by_robot: Dict[str, np.ndarray],
+    pred_ee_by_robot: Dict[str, np.ndarray],
+    object_pose_seq: np.ndarray,
+    object_points_local: np.ndarray,
+    fps: int = 20,
+    stride: int = 2,
+    max_frames: int = 0,
+):
+    """Render moving object + MANO 21 joints + all robot EE points (left GT, right Pred)."""
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    common_keys = [k for k in gt_ee_by_robot.keys() if k in pred_ee_by_robot]
+    if len(common_keys) == 0:
+        raise ValueError("No common robot keys to render.")
+
+    mano_joints_world = np.asarray(mano_joints_world, dtype=np.float32)
+    object_pose_seq = np.asarray(object_pose_seq, dtype=np.float32)
+    object_points_local = np.asarray(object_points_local, dtype=np.float32)
+    t = min(mano_joints_world.shape[0], object_pose_seq.shape[0])
+    for k in common_keys:
+        t = min(t, gt_ee_by_robot[k].shape[0], pred_ee_by_robot[k].shape[0])
+    if t <= 0:
+        raise ValueError("No valid frames for rendering.")
+
+    frame_ids = np.arange(0, t, max(1, stride))
+    if max_frames > 0:
+        frame_ids = frame_ids[:max_frames]
+    if frame_ids.size == 0:
+        raise ValueError("No frames after stride/max_frames filtering.")
+
+    # Fixed global bounds
+    min_xyz = np.minimum(mano_joints_world[:t].reshape(-1, 3).min(axis=0), object_pose_seq[:t, 4:7].min(axis=0))
+    max_xyz = np.maximum(mano_joints_world[:t].reshape(-1, 3).max(axis=0), object_pose_seq[:t, 4:7].max(axis=0))
+    for k in common_keys:
+        min_xyz = np.minimum(min_xyz, gt_ee_by_robot[k][:t].reshape(-1, 3).min(axis=0))
+        min_xyz = np.minimum(min_xyz, pred_ee_by_robot[k][:t].reshape(-1, 3).min(axis=0))
+        max_xyz = np.maximum(max_xyz, gt_ee_by_robot[k][:t].reshape(-1, 3).max(axis=0))
+        max_xyz = np.maximum(max_xyz, pred_ee_by_robot[k][:t].reshape(-1, 3).max(axis=0))
+    margin = 0.05
+    min_xyz -= margin
+    max_xyz += margin
+
+    colors = [
+        "tab:blue", "tab:orange", "tab:green", "tab:red", "tab:purple",
+        "tab:brown", "tab:pink", "tab:gray", "tab:olive", "tab:cyan",
+    ]
+    color_map = {k: colors[i % len(colors)] for i, k in enumerate(common_keys)}
+
+    fig = plt.figure(figsize=(12, 6))
+    ax_gt = fig.add_subplot(1, 2, 1, projection="3d")
+    ax_pr = fig.add_subplot(1, 2, 2, projection="3d")
+
+    def _setup(ax, title: str):
+        ax.set_title(title)
+        ax.set_xlabel("x")
+        ax.set_ylabel("y")
+        ax.set_zlabel("z")
+        ax.set_xlim(min_xyz[0], max_xyz[0])
+        ax.set_ylim(min_xyz[1], max_xyz[1])
+        ax.set_zlim(min_xyz[2], max_xyz[2])
+
+    def _draw_mano(ax, joints):
+        ax.scatter(joints[:, 0], joints[:, 1], joints[:, 2], s=10, c="k", alpha=0.9, label="mano_21j")
+        for a, b in HAND_EDGES:
+            ax.plot(
+                [joints[a, 0], joints[b, 0]],
+                [joints[a, 1], joints[b, 1]],
+                [joints[a, 2], joints[b, 2]],
+                c="k",
+                linewidth=0.8,
+                alpha=0.7,
+            )
+
+    def update(frame_idx: int):
+        fi = int(frame_ids[frame_idx])
+        ax_gt.cla()
+        ax_pr.cla()
+        _setup(ax_gt, f"GT | frame={fi}")
+        _setup(ax_pr, f"Pred | frame={fi}")
+
+        # Object moves with pose sequence.
+        t_obj = posquat_to_T(object_pose_seq[fi])
+        obj_w = transform_points(t_obj, object_points_local)
+        obj_sub = obj_w[:: max(1, len(obj_w) // 2000)]
+        ax_gt.scatter(obj_sub[:, 0], obj_sub[:, 1], obj_sub[:, 2], s=1, c="gray", alpha=0.3, label="object")
+        ax_pr.scatter(obj_sub[:, 0], obj_sub[:, 1], obj_sub[:, 2], s=1, c="gray", alpha=0.3, label="object")
+
+        # MANO 21 joints (decoded from mano pose)
+        joints = mano_joints_world[fi]
+        _draw_mano(ax_gt, joints)
+        _draw_mano(ax_pr, joints)
+
+        # Full EE points (not a single point)
+        for key in common_keys:
+            c = color_map[key]
+            gt_pts = gt_ee_by_robot[key][fi]
+            pr_pts = pred_ee_by_robot[key][fi]
+            ax_gt.scatter(gt_pts[:, 0], gt_pts[:, 1], gt_pts[:, 2], s=16, c=c, alpha=0.9, label=key)
+            ax_pr.scatter(pr_pts[:, 0], pr_pts[:, 1], pr_pts[:, 2], s=16, c=c, alpha=0.9, label=key)
+
+        if frame_idx == 0:
+            ax_gt.legend(loc="upper right", fontsize=7)
+            ax_pr.legend(loc="upper right", fontsize=7)
+        return []
+
+    ani = animation.FuncAnimation(fig, update, frames=len(frame_ids), interval=1000.0 / max(1, fps), blit=False)
+    writer = animation.FFMpegWriter(fps=max(1, int(fps)), codec="libx264")
     ani.save(save_path, writer=writer, dpi=140)
     plt.close(fig)

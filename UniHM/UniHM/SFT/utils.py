@@ -61,6 +61,8 @@ class SeqDataset(Dataset):
         mano = result["hand_pose"].to(torch.float32)  # (T, Dm)
         x_input = result["inspire_hand_qpos"].to(torch.float32)
         pointcloud = result["grasped_obj_point3d"].to(torch.float32)  # (N, 3)
+        hand_shape = result["hand_shape"].to(torch.float32)
+        extrinsics = torch.as_tensor(result["extrinsics"], dtype=torch.float32)
         grasped_with_obj_id = result.get("grasped_with_obj_id", "")
         text = f"grasp object id {grasped_with_obj_id}"  # kept as simple identifier text
         obj_pose_seq = torch.as_tensor(result.get("grasped_obj_pose"), dtype=torch.float32)  # (T, Dp)
@@ -70,11 +72,29 @@ class SeqDataset(Dataset):
         for k, v in result.items():
             if k.endswith("_qpos"):
                 targets[k] = v.to(torch.float32)  # (T, Dk)
-        item = {"mano_pose": mano, "x_input": x_input, "pointcloud": pointcloud, "object_pose_seq": obj_pose_seq, "text": text, "targets": targets}
+        item = {
+            "mano_pose": mano,
+            "x_input": x_input,
+            "pointcloud": pointcloud,
+            "object_pose_seq": obj_pose_seq,
+            "text": text,
+            "targets": targets,
+            "hand_shape": hand_shape,
+            "extrinsics": extrinsics,
+        }
+        for k in ["mano_joint_3d_world", "mano_joint_3d"]:
+            if k in result:
+                item[k] = result[k].to(torch.float32)
         if contact_obj_map is not None:
             item["contact_obj_map"] = torch.as_tensor(contact_obj_map, dtype=torch.float32)
         if contact_hand_map is not None:
             item["contact_hand_map"] = torch.as_tensor(contact_hand_map, dtype=torch.float32)
+        for k in [
+            "allegro_ee_target", "shadow_ee_target", "svh_ee_target",
+            "leap_ee_target", "ability_ee_target", "panda_ee_target", "inspire_ee_target",
+        ]:
+            if k in result:
+                item[k] = result[k].to(torch.float32)
         return item
 
 
@@ -87,6 +107,10 @@ def collate_seq(batch: List[Dict[str, any]]):
     targets_collated: Dict[str, List[torch.Tensor]] = {}
     contact_obj_maps = []
     contact_hand_maps = []
+    hand_shapes = []
+    extrinsics_list = []
+    mano_joint_3d_world = []
+    ee_targets_collated: Dict[str, List[torch.Tensor]] = {}
 
     def sample_pointcloud(pc: torch.Tensor, n_points: int = N_POINTS) -> torch.Tensor:
         # pc: (N, 3)
@@ -170,6 +194,28 @@ def collate_seq(batch: List[Dict[str, any]]):
         if chm is not None:
             contact_hand_maps.append(chm)
         pcls.append(sample_pointcloud(pc))
+        hand_shapes.append(b["hand_shape"])
+        extrinsics_list.append(b["extrinsics"])
+        mj = b.get("mano_joint_3d_world", b.get("mano_joint_3d", None))
+        if mj is not None:
+            if mj.size(0) >= T_FIXED:
+                mj = mj[:T_FIXED]
+            else:
+                pad = T_FIXED - mj.size(0)
+                mj = torch.cat([mj, mj[-1:].expand(pad, -1, -1)], dim=0) if mj.size(0) > 0 else torch.zeros((T_FIXED, 21, 3))
+            mano_joint_3d_world.append(mj)
+        for k in [
+            "allegro_ee_target", "shadow_ee_target", "svh_ee_target",
+            "leap_ee_target", "ability_ee_target", "panda_ee_target", "inspire_ee_target",
+        ]:
+            if k in b:
+                ee = b[k]
+                if ee.size(0) >= T_FIXED:
+                    ee = ee[:T_FIXED]
+                else:
+                    pad = T_FIXED - ee.size(0)
+                    ee = torch.cat([ee, ee[-1:].expand(pad, -1, -1)], dim=0) if ee.size(0) > 0 else torch.zeros((T_FIXED, 0, 3))
+                ee_targets_collated.setdefault(k, []).append(ee)
         texts.append(b["text"])
         for k, t in cropped_targets.items():
             targets_collated.setdefault(k, []).append(t)
@@ -179,11 +225,25 @@ def collate_seq(batch: List[Dict[str, any]]):
     objpose = torch.stack(objposes, dim=0)        # (B, T_FIXED, Dp)
     pcl = torch.stack(pcls, dim=0)                # (B, N_POINTS, 3)
     targets_batch = {k: torch.stack(vs, dim=0) for k, vs in targets_collated.items()}
-    batch_out = {"mano_pose": mano,"x_input": x_input_batch, "object_pose_seq": objpose, "pointcloud": pcl, "text": texts, "targets": targets_batch}
+    batch_out = {
+        "mano_pose": mano,
+        "x_input": x_input_batch,
+        "object_pose_seq": objpose,
+        "pointcloud": pcl,
+        "text": texts,
+        "targets": targets_batch,
+        "hand_shape": torch.stack(hand_shapes, dim=0),
+        "extrinsics": torch.stack(extrinsics_list, dim=0),
+    }
+    if len(mano_joint_3d_world) == len(batch):
+        batch_out["mano_joint_3d_world"] = torch.stack(mano_joint_3d_world, dim=0)
     if len(contact_obj_maps) == len(batch):
         batch_out["contact_obj_map"] = torch.stack(contact_obj_maps, dim=0)
     if len(contact_hand_maps) == len(batch):
         batch_out["contact_hand_map"] = torch.stack(contact_hand_maps, dim=0)
+    for k, vs in ee_targets_collated.items():
+        if len(vs) == len(batch):
+            batch_out[k] = torch.stack(vs, dim=0)
     return batch_out
 
 
@@ -254,4 +314,3 @@ def build_model_and_meta(device: torch.device, single_dataset_path: str, qwen_id
         qwen_dtype=torch.bfloat16,
     )
     return model, present_robot_keys, vqvae_kwargs
-
