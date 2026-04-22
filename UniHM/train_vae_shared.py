@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 from typing import Dict, List
 
@@ -185,6 +186,10 @@ def train(args):
     ref_optim = torch.optim.AdamW(model.parameters(), lr=args.lr_ref, weight_decay=args.weight_decay)
     ref_hist = {"train_total": [], "val_total": []}
     best_ref = float("inf")
+    save_ref_ckpt = args.save_ref_ckpt
+    if save_ref_ckpt == "":
+        root, ext = os.path.splitext(args.save_ckpt)
+        save_ref_ckpt = f"{root}_ref{ext or '.pth'}"
     for epoch in range(1, args.ref_epochs + 1):
         tr = run_ref_epoch(
             model, tqdm(train_loader, desc=f"Ref train {epoch}", leave=False), device, args.beta_kl,
@@ -209,6 +214,19 @@ def train(args):
         print(f"[Ref] Epoch {epoch}: train={tr:.6f}, val={val_loss:.6f}")
         if val_loss < best_ref:
             best_ref = val_loss
+            os.makedirs(os.path.dirname(save_ref_ckpt), exist_ok=True)
+            torch.save({
+                "model": model.state_dict(),
+                "present_keys": present_keys,
+                "out_dims": out_dims,
+                "mano_dim": mano_dim,
+                "latent_dim": args.latent_dim,
+                "hidden_dim": args.hidden_dim,
+                "contact_obj_dim": args.contact_num_points if use_obj_contact else 0,
+                "contact_hand_dim": 21 if use_hand_contact else 0,
+                "training_stage": "ref",
+                "best_ref_val": best_ref,
+            }, save_ref_ckpt)
 
     # Stage 2: freeze ref and train robot decoders only.
     freeze_ref_and_encoder(model)
@@ -240,6 +258,10 @@ def train(args):
                 "contact_hand_dim": 21 if use_hand_contact else 0,
                 "training_stage": "robot_decoder",
             }, args.save_ckpt)
+    with open(os.path.join(args.log_dir, "vae_ref_history.json"), "w", encoding="utf-8") as f:
+        json.dump(ref_hist, f, indent=2)
+    with open(os.path.join(args.log_dir, "vae_robot_history.json"), "w", encoding="utf-8") as f:
+        json.dump(robot_hist, f, indent=2)
     plot_losses({"train_total": ref_hist["train_total"], "val_total": ref_hist["val_total"]},
                 os.path.join(args.log_dir, "vae_ref_losses.png"))
     plot_losses({"train_total": robot_hist["train_total"], "val_total": robot_hist["val_total"]},
@@ -266,6 +288,7 @@ if __name__ == "__main__":
     p.add_argument("--w-contact-obj", type=float, default=1.0)
     p.add_argument("--w-contact-hand", type=float, default=0.5)
     p.add_argument("--max-contact-pos-weight", type=float, default=50.0)
+    p.add_argument("--save-ref-ckpt", type=str, default="", help="Optional path to save best ref-stage checkpoint.")
     p.add_argument("--save-ckpt", type=str, default="/public/home/jiaozixun/UniHM/checkpoints/vae_shared_best.pth")
     p.add_argument("--log-dir", type=str, default="/public/home/jiaozixun/UniHM/logs")
     args = p.parse_args()
