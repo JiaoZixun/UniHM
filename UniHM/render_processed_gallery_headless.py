@@ -19,22 +19,6 @@ _SRC_ROOT = _PROJECT_ROOT / "src"
 if str(_SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(_SRC_ROOT))
 
-try:
-    from dexycb_canonical_pipeline.pipeline_config import load_pipeline_config, cfg_get
-except Exception:
-    def load_pipeline_config(path: str):
-        import yaml
-        with open(path, "r", encoding="utf-8") as f:
-            return yaml.safe_load(f)
-
-    def cfg_get(cfg: Dict[str, Any], *keys, default=None):
-        cur = cfg
-        for k in keys:
-            if not isinstance(cur, dict) or k not in cur:
-                return default
-            cur = cur[k]
-        return cur
-
 legacy_aliases = {
     "bool": bool,
     "int": int,
@@ -500,27 +484,23 @@ class HeadlessProcessedMultiRobotViewer:
 
 
 def main():
-    default_config = _PROJECT_ROOT / "configs" / "dexycb_pipeline_config.yaml"
     parser = argparse.ArgumentParser(description="Headless processed multi-robot gallery renderer based on pyrender")
-    parser.add_argument("--config", default=str(default_config))
-    parser.add_argument("--input", required=True)
-    parser.add_argument("--save-dir", required=False, default=None)
-    parser.add_argument("--repo-root", default=None)
-    parser.add_argument("--robot-asset-root", default=None)
-    parser.add_argument("--mano-root", default=None)
-    parser.add_argument("--fps", type=int, default=None)
-    parser.add_argument("--robots", nargs="+", default=None)
+    parser.add_argument("--input", type=str, required=True, help="Input processed npz file.")
+    parser.add_argument("--save-dir", type=str, default="/public/home/jiaozixun/UniHM/renders/processed_gallery")
+    parser.add_argument("--repo-root", type=str, default="/public/home/jiaozixun/dex-retargeting")
+    parser.add_argument("--robot-asset-root", type=str, default="/public/home/jiaozixun/dex-retargeting/assets/robots/hands")
+    parser.add_argument("--mano-root", type=str, default="/public/home/jiaozixun/UniHuman2Rob/manopth/mano/models")
+    parser.add_argument("--fps", type=int, default=10)
+    parser.add_argument(
+        "--robots",
+        nargs="+",
+        default=["allegro", "shadow", "svh", "leap", "ability", "panda"],
+        help="Robots to render. Default renders all six robots.",
+    )
     args = parser.parse_args()
-
-    cfg = load_pipeline_config(args.config)
     seq_path = Path(args.input).expanduser().resolve()
     seq_name = seq_path.stem
-    args.save_dir = args.save_dir or str(Path(cfg_get(cfg, "paths", "viz_root", default="./viz")) / seq_name)
-    args.repo_root = args.repo_root or cfg_get(cfg, "paths", "repo_root")
-    args.robot_asset_root = args.robot_asset_root or cfg_get(cfg, "paths", "robot_asset_root")
-    args.mano_root = args.mano_root or cfg_get(cfg, "paths", "mano_root")
-    args.fps = args.fps if args.fps is not None else int(cfg_get(cfg, "render", "fps", default=10))
-    args.robots = args.robots or cfg_get(cfg, "robots", "keys", default=["allegro", "shadow", "svh", "leap", "ability", "panda"])
+    save_dir = Path(args.save_dir).expanduser().resolve() / seq_name
 
     viewer = HeadlessProcessedMultiRobotViewer(
         robot_names=args.robots,
@@ -530,7 +510,7 @@ def main():
     )
     seq = npz_to_dict(seq_path)
     active_robot_names = viewer.load_sequence_assets(seq, args.robots)
-    out = viewer.render_sequence(seq, active_robot_names, args.save_dir, fps=args.fps)
+    out = viewer.render_sequence(seq, active_robot_names, str(save_dir), fps=args.fps)
     print("[OK] outputs:")
     for k, v in out.items():
         print(f"  {k}: {v}")
