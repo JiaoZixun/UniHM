@@ -45,13 +45,29 @@ def load_dataset_squential(file):
     except:
         grasped_obj_idx = 0
         grasped_obj_pose = object_pose[:,0]
-    try:
-        grasped_obj_xyz = [os.path.join(os.path.dirname(obj),"points.xyz") for obj in object_mesh_file][grasped_obj_idx]
-        grasped_obj_point3d = np.loadtxt(grasped_obj_xyz)
-    except:
-        grasped_obj_point3d = np.loadtxt(object_mesh_file.tolist())
-        # mesh = trimesh.load(object_mesh_file.tolist(), process=False)
-        # grasped_obj_point3d = mesh.vertices.view(np.ndarray)
+    if "grasped_obj_point3d" in data:
+        grasped_obj_point3d = data["grasped_obj_point3d"]
+    else:
+        try:
+            grasped_obj_xyz = [os.path.join(os.path.dirname(obj),"points.xyz") for obj in object_mesh_file][grasped_obj_idx]
+            grasped_obj_point3d = np.loadtxt(grasped_obj_xyz)
+        except:
+            grasped_obj_point3d = np.loadtxt(object_mesh_file.tolist())
+            # mesh = trimesh.load(object_mesh_file.tolist(), process=False)
+            # grasped_obj_point3d = mesh.vertices.view(np.ndarray)
+
+    hand_obj_dist_map = None
+    contact_obj_map = None
+    contact_hand_map = None
+    if "hand_obj_dist_map" in data:
+        hand_obj_dist_map = data["hand_obj_dist_map"].astype(np.float32)  # (T, N, 21)
+        # Similar to Text2HOI post-processing: object-side and hand-side binary maps.
+        contact_obj_map = (hand_obj_dist_map.min(axis=2) < 0.02).astype(np.float32)  # (T, N)
+        contact_hand_map = (hand_obj_dist_map.min(axis=1) < 0.02).astype(np.float32)  # (T, 21)
+    if "contact_obj_map" in data:
+        contact_obj_map = data["contact_obj_map"].astype(np.float32)
+    if "contact_hand_map" in data:
+        contact_hand_map = data["contact_hand_map"].astype(np.float32)
 
 
 
@@ -78,6 +94,12 @@ def load_dataset_squential(file):
         "grasped_obj_idx":grasped_obj_idx,
         "grasped_obj_point3d":torch.tensor(grasped_obj_point3d, dtype=torch.float32), # nx3
     }
+    if hand_obj_dist_map is not None:
+        result["hand_obj_dist_map"] = torch.tensor(hand_obj_dist_map, dtype=torch.float32)
+    if contact_obj_map is not None:
+        result["contact_obj_map"] = torch.tensor(contact_obj_map, dtype=torch.float32)
+    if contact_hand_map is not None:
+        result["contact_hand_map"] = torch.tensor(contact_hand_map, dtype=torch.float32)
     return result
 
 
@@ -104,4 +126,3 @@ class HandDataset(torch.utils.data.Dataset):
             if k.endswith('_qpos'):
                 ydict[k] = torch.as_tensor(v, dtype=torch.float32).reshape(-1)
         return x, ydict
-

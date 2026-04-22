@@ -108,6 +108,13 @@ def render_video(npz_path: str, out_dir: str, fps: int = 20, stride: int = 1, ma
         f"[motion] {stem} hand(mean/max/moving_ratio)={hand_m[0]:.6f}/{hand_m[1]:.6f}/{hand_m[2]:.3f}, "
         f"object={obj_m[0]:.6f}/{obj_m[1]:.6f}/{obj_m[2]:.3f}"
     )
+    if pose_frame == "grasped_object_local" and "object_pose_world" in raw:
+        obj_world = raw["object_pose_world"][:, int(ds["grasped_obj_idx"]), 4:7]
+        obj_world_m = _motion_ratio(obj_world)
+        print(
+            f"[motion] {stem} object_world(mean/max/moving_ratio)="
+            f"{obj_world_m[0]:.6f}/{obj_world_m[1]:.6f}/{obj_world_m[2]:.3f}"
+        )
     for alias, ee in ee_data.items():
         ee_center = ee.mean(axis=1)
         ee_m = _motion_ratio(ee_center)
