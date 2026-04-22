@@ -192,6 +192,12 @@ def evaluate(args):
             mano_bt = mano.reshape(B * T, Dm)
             obj_feat = object_feature_from_pointcloud(pc).unsqueeze(1).expand(-1, T, -1).reshape(B * T, -1)
             out = model(mano_bt, obj_feat)
+            # out dict_keys(['mu', 'logvar', 'z', 'preds'])
+            # len(out["preds"]) 9
+            # out["preds"] torch.Size([70, 22])
+            # out["mu"] torch.Size([70, 256])
+            # out["logvar"] torch.Size([70, 256])
+            # out["z"] torch.Size([70, 256])
             preds = out["preds"]
             ys = resolve_targets(targets, present_keys, device)
 
