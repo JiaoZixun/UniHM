@@ -94,6 +94,25 @@ def load_dataset_squential(file):
         "grasped_obj_idx":grasped_obj_idx,
         "grasped_obj_point3d":torch.tensor(grasped_obj_point3d, dtype=torch.float32), # nx3
     }
+    if "mano_joint_3d_world" in data:
+        result["mano_joint_3d_world"] = torch.tensor(data["mano_joint_3d_world"], dtype=torch.float32)
+    elif "mano_joint_3d" in data:
+        result["mano_joint_3d"] = torch.tensor(data["mano_joint_3d"], dtype=torch.float32)
+    for src_key, out_key in [
+        ("allegro_hand", "allegro_ee_target"),
+        ("shadow_hand", "shadow_ee_target"),
+        ("schunk_svh_hand", "svh_ee_target"),
+        ("leap_hand", "leap_ee_target"),
+        ("ability_hand", "ability_ee_target"),
+        ("panda_gripper", "panda_ee_target"),
+        ("inspire_hand", "inspire_ee_target"),
+    ]:
+        if src_key in data:
+            info = dict(data[src_key].tolist())
+            if "ee_target_world" in info:
+                result[out_key] = torch.tensor(info["ee_target_world"], dtype=torch.float32)
+            elif "ee_target" in info:
+                result[out_key] = torch.tensor(info["ee_target"], dtype=torch.float32)
     if hand_obj_dist_map is not None:
         result["hand_obj_dist_map"] = torch.tensor(hand_obj_dist_map, dtype=torch.float32)
     if contact_obj_map is not None:

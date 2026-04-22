@@ -1,12 +1,16 @@
 import argparse
 import os
+from typing import Dict
 import numpy as np
 import torch
 
 from UniHM.SFT.utils import build_seq_dataloaders, DECODER_KEY_ALIASES, ROBOT_KEYS_ORDER
 from UniHM.vae.multi_vae import MultiDecoderVAE
 from UniHM.metrics.common_metrics import mpjpe, fhlt, fhlr, fid, smoothness_l2, rollout_drift
-from UniHM.visualization.training_viz import render_hand_object_sequence
+from UniHM.visualization.training_viz import render_hand_object_sequence, render_fullbody_gt_pred_video
+from UniHM.utils.mano_layer import MANOLayer
+from dex_retargeting.constants import HandType, RobotName
+from UniHM.utils.retargeting_processor import RetargetingProcessor
 
 
 def object_feature_from_pointcloud(pc: torch.Tensor) -> torch.Tensor:
@@ -22,6 +26,68 @@ def resolve_targets(targets, present_keys, device):
         kk = next((a for a in aliases if a in targets), None)
         out.append(targets[kk].to(device) if kk else None)
     return out
+
+
+_ROBOT_KEY_TO_NAME = {
+    "allegro_hand_qpos": RobotName.allegro,
+    "shadow_hand_qpos": RobotName.shadow,
+    "svh_hand_qpos": RobotName.svh,
+    "schunk_svh_hand_qpos": RobotName.svh,
+    "leap_hand_qpos": RobotName.leap,
+    "ability_hand_qpos": RobotName.ability,
+    "panda_hand_qpos": RobotName.panda,
+    "panda_gripper_qpos": RobotName.panda,
+    "inspire_hand_qpos": RobotName.inspire,
+}
+
+def decode_mano_joints_world(
+    mano_seq: np.ndarray,
+    hand_shape: np.ndarray,
+    extrinsics: np.ndarray,
+    mano_model_dir: str | None = None,
+) -> np.ndarray:
+    """Decode MANO pose sequence to 21 joints in world frame."""
+    if mano_seq.ndim != 2 or mano_seq.shape[1] < 51:
+        raise ValueError(f"Unexpected mano_seq shape: {mano_seq.shape}")
+    layer = MANOLayer("right", hand_shape.astype(np.float32), mano_root=mano_model_dir)
+    p = torch.from_numpy(mano_seq[:, :48].astype(np.float32))
+    t = torch.from_numpy(mano_seq[:, 48:51].astype(np.float32))
+    _, joint = layer(p, t)
+    joint = joint.detach().cpu().numpy()
+    camera_pose = np.linalg.inv(extrinsics)
+    joint = joint @ camera_pose[:3, :3].T + camera_pose[:3, 3]
+    return np.ascontiguousarray(joint, dtype=np.float32)
+
+
+def _decode_ee_from_qpos(
+    processor: RetargetingProcessor,
+    ridx: int,
+    qpos_seq: np.ndarray,
+) -> np.ndarray:
+    """Decode EE keypoints from qpos using loaded robot kinematics."""
+    robot = processor.robots[ridx]
+    retargeting = processor.retargetings[ridx]
+    links = {l.name: l for l in robot.get_links()}
+    target_names = list(getattr(retargeting.optimizer, "target_link_names", []) or [])
+    if len(target_names) == 0:
+        target_names = [n for n in links.keys() if "tip" in n.lower()]
+    if len(target_names) == 0:
+        raise RuntimeError("Cannot resolve target EE links from retargeting optimizer.")
+
+    out = []
+    for t in range(qpos_seq.shape[0]):
+        q = qpos_seq[t]
+        robot.set_qpos(q.astype(np.float32))
+        if processor.scene is not None:
+            processor.scene.step()
+        pts = []
+        for n in target_names:
+            if n in links:
+                pts.append(links[n].get_pose().p)
+        if len(pts) == 0:
+            raise RuntimeError(f"No valid EE links found for names: {target_names}")
+        out.append(np.stack(pts, axis=0))
+    return np.asarray(out, dtype=np.float32)
 
 
 def evaluate(args):
@@ -91,6 +157,23 @@ def evaluate(args):
     metric_names = ["mpjpe_legacy", "qpos_mae", "trans_mae", "rot_mae", "fid", "smooth", "drift"]
     per_robot = {k: {m: [] for m in metric_names} for k in present_keys}
     os.makedirs(args.render_dir, exist_ok=True)
+    rendered_videos = 0
+    need_fk_keys = [k for k in present_keys if k in _ROBOT_KEY_TO_NAME]
+    uniq_robot_names = []
+    for k in need_fk_keys:
+        rn = _ROBOT_KEY_TO_NAME[k]
+        if rn not in uniq_robot_names:
+            uniq_robot_names.append(rn)
+    fk_processor = None
+    robot_name_to_index: Dict[RobotName, int] = {}
+    if len(uniq_robot_names) > 0:
+        fk_processor = RetargetingProcessor(
+            robot_names=uniq_robot_names,
+            hand_type=HandType.right,
+            urdf_dir=args.urdf_dir if args.urdf_dir else None,
+            mano_model_dir=args.mano_model_dir if args.mano_model_dir else None,
+        )
+        robot_name_to_index = {rn: i for i, rn in enumerate(uniq_robot_names)}
 
     with torch.no_grad():
         for i, batch in enumerate(val_loader):
@@ -108,12 +191,16 @@ def evaluate(args):
 
             # Evaluate every available robot decoder separately.
             first_pred_seq = first_gt_seq = None
+            gt_by_robot = {}
+            pred_by_robot = {}
             for j, y in enumerate(ys):
                 if y is None:
                     continue
                 pred_seq = preds[j].view(B, T, -1)[0].cpu().numpy()
                 gt_seq = y[0].cpu().numpy()
                 rkey = present_keys[j]
+                gt_by_robot[rkey] = gt_seq
+                pred_by_robot[rkey] = pred_seq
                 per_robot[rkey]["mpjpe_legacy"].append(mpjpe(pred_seq, gt_seq))
                 per_robot[rkey]["qpos_mae"].append(float(np.abs(pred_seq[:, 6:] - gt_seq[:, 6:]).mean()))
                 per_robot[rkey]["trans_mae"].append(fhlt(pred_seq, gt_seq))
@@ -134,6 +221,39 @@ def evaluate(args):
                     save_path=os.path.join(args.render_dir, f"vae_seq_{i:05d}.png"),
                     stride=args.render_stride,
                 )
+                if rendered_videos < args.render_max_videos and len(gt_by_robot) > 0 and fk_processor is not None:
+                    gt_ee_by_robot = {}
+                    pred_ee_by_robot = {}
+                    for rkey, gt_seq in gt_by_robot.items():
+                        if rkey not in _ROBOT_KEY_TO_NAME:
+                            continue
+                        ridx = robot_name_to_index[_ROBOT_KEY_TO_NAME[rkey]]
+                        gt_ee_by_robot[rkey] = _decode_ee_from_qpos(fk_processor, ridx, gt_seq)
+                        pred_ee_by_robot[rkey] = _decode_ee_from_qpos(fk_processor, ridx, pred_by_robot[rkey])
+
+                    if "mano_joint_3d_world" in batch:
+                        mano_joints_world = batch["mano_joint_3d_world"][0].cpu().numpy()
+                    else:
+                        mano_joints_world = decode_mano_joints_world(
+                            mano_seq=mano[0].cpu().numpy(),
+                            hand_shape=batch["hand_shape"][0].cpu().numpy(),
+                            extrinsics=batch["extrinsics"][0].cpu().numpy(),
+                            mano_model_dir=args.mano_model_dir if args.mano_model_dir else None,
+                        )
+
+                    if len(gt_ee_by_robot) > 0:
+                        render_fullbody_gt_pred_video(
+                            save_path=os.path.join(args.render_dir, f"vae_compare_{i:05d}.mp4"),
+                            mano_joints_world=mano_joints_world,
+                            gt_ee_by_robot=gt_ee_by_robot,
+                            pred_ee_by_robot=pred_ee_by_robot,
+                            object_pose_seq=obj_pose,
+                            object_points_local=obj_local,
+                            fps=args.render_fps,
+                            stride=args.render_stride,
+                            max_frames=args.render_max_frames,
+                        )
+                        rendered_videos += 1
 
     print("===== VAE Eval by Robot (UniHM-compatible + extra) =====")
     print("[note] qpos_mae is in native robot joint units (typically radians).")
@@ -163,6 +283,11 @@ if __name__ == "__main__":
     p.add_argument("--render-dir", type=str, default="/public/home/jiaozixun/UniHM/renders/vae")
     p.add_argument("--render-every", type=int, default=100)
     p.add_argument("--render-stride", type=int, default=5)
+    p.add_argument("--render-max-videos", type=int, default=5, help="Maximum number of comparison videos to render.")
+    p.add_argument("--render-fps", type=int, default=20, help="FPS for rendered comparison videos.")
+    p.add_argument("--render-max-frames", type=int, default=0, help="Maximum frames per video; 0 means all.")
+    p.add_argument("--mano-model-dir", type=str, default="", help="Optional MANO model dir for decoding 21 joints.")
+    p.add_argument("--urdf-dir", type=str, default="", help="Optional URDF root for robot FK decoding.")
     p.add_argument("--eval-stage", type=str, default="auto", choices=["auto", "ref", "robot"],
                    help="auto: infer from ckpt training_stage; ref: eval mano/contact; robot: eval robot decoder outputs.")
     args = p.parse_args()
