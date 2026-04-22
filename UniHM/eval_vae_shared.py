@@ -27,12 +27,15 @@ def resolve_targets(targets, present_keys, device):
 def evaluate(args):
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     ckpt = torch.load(args.ckpt, map_location="cpu")
+    training_stage = ckpt.get("training_stage", "robot_decoder")
     model = MultiDecoderVAE(
         mano_dim=ckpt["mano_dim"],
         object_dim=6,
         hidden_dim=ckpt["hidden_dim"],
         latent_dim=ckpt["latent_dim"],
         decoder_out_dims=ckpt["out_dims"],
+        contact_obj_dim=int(ckpt.get("contact_obj_dim", 0)),
+        contact_hand_dim=int(ckpt.get("contact_hand_dim", 0)),
     ).to(device)
     model.load_state_dict(ckpt["model"], strict=True)
     model.eval()
@@ -40,7 +43,53 @@ def evaluate(args):
 
     _, val_loader = build_seq_dataloaders(args.seq_glob, batch_size=1, num_workers=max(1, args.num_workers // 2))
 
-    metrics = {"mpjpe": [], "fhlt": [], "fhlr": [], "fid": [], "smooth": [], "drift": []}
+    eval_stage = args.eval_stage
+    if eval_stage == "auto":
+        eval_stage = "ref" if training_stage == "ref" else "robot"
+
+    if eval_stage == "ref":
+        metrics = {"mano_l1": [], "contact_obj_bce": [], "contact_obj_f1": [], "contact_hand_bce": [], "contact_hand_f1": []}
+        with torch.no_grad():
+            for batch in val_loader:
+                mano = batch["mano_pose"].to(device)
+                pc = batch["pointcloud"].to(device)
+                contact_obj = batch.get("contact_obj_map", None)
+                contact_hand = batch.get("contact_hand_map", None)
+                B, T, Dm = mano.shape
+                mano_bt = mano.reshape(B * T, Dm)
+                obj_feat = object_feature_from_pointcloud(pc).unsqueeze(1).expand(-1, T, -1).reshape(B * T, -1)
+                out = model.forward_ref(mano_bt, obj_feat)
+                metrics["mano_l1"].append(float(torch.nn.functional.l1_loss(out["mano_rec"], mano_bt).item()))
+                if out["contact_obj_logits"] is not None and contact_obj is not None:
+                    gt_obj = contact_obj.to(device).reshape(B * T, -1)
+                    pred_obj = torch.sigmoid(out["contact_obj_logits"])
+                    bce_obj = torch.nn.functional.binary_cross_entropy(pred_obj, gt_obj)
+                    pred_bin = (pred_obj > 0.5).float()
+                    tp = (pred_bin * gt_obj).sum()
+                    fp = (pred_bin * (1 - gt_obj)).sum()
+                    fn = ((1 - pred_bin) * gt_obj).sum()
+                    f1 = (2 * tp / (2 * tp + fp + fn + 1e-6)).item()
+                    metrics["contact_obj_bce"].append(float(bce_obj.item()))
+                    metrics["contact_obj_f1"].append(float(f1))
+                if out["contact_hand_logits"] is not None and contact_hand is not None:
+                    gt_hand = contact_hand.to(device).reshape(B * T, -1)
+                    pred_hand = torch.sigmoid(out["contact_hand_logits"])
+                    bce_hand = torch.nn.functional.binary_cross_entropy(pred_hand, gt_hand)
+                    pred_bin = (pred_hand > 0.5).float()
+                    tp = (pred_bin * gt_hand).sum()
+                    fp = (pred_bin * (1 - gt_hand)).sum()
+                    fn = ((1 - pred_bin) * gt_hand).sum()
+                    f1 = (2 * tp / (2 * tp + fp + fn + 1e-6)).item()
+                    metrics["contact_hand_bce"].append(float(bce_hand.item()))
+                    metrics["contact_hand_f1"].append(float(f1))
+        print("===== VAE Ref Eval =====")
+        for k, v in metrics.items():
+            if len(v) > 0:
+                print(f"{k}: {float(np.mean(v)):.6f}")
+        return
+
+    metric_names = ["mpjpe_legacy", "qpos_mae", "trans_mae", "rot_mae", "fid", "smooth", "drift"]
+    per_robot = {k: {m: [] for m in metric_names} for k in present_keys}
     os.makedirs(args.render_dir, exist_ok=True)
 
     with torch.no_grad():
@@ -57,38 +106,52 @@ def evaluate(args):
             preds = out["preds"]
             ys = resolve_targets(targets, present_keys, device)
 
-            # use first available hand to align with UniHM-style core metrics
-            pred_seq = gt_seq = None
+            # Evaluate every available robot decoder separately.
+            first_pred_seq = first_gt_seq = None
             for j, y in enumerate(ys):
                 if y is None:
                     continue
                 pred_seq = preds[j].view(B, T, -1)[0].cpu().numpy()
                 gt_seq = y[0].cpu().numpy()
-                break
-            if pred_seq is None:
-                continue
-
-            metrics["mpjpe"].append(mpjpe(pred_seq, gt_seq))
-            metrics["fhlt"].append(fhlt(pred_seq, gt_seq))
-            metrics["fhlr"].append(fhlr(pred_seq, gt_seq))
-            metrics["fid"].append(fid(pred_seq, gt_seq))
-            metrics["smooth"].append(smoothness_l2(pred_seq))
-            metrics["drift"].append(rollout_drift(pred_seq, gt_seq))
+                rkey = present_keys[j]
+                per_robot[rkey]["mpjpe_legacy"].append(mpjpe(pred_seq, gt_seq))
+                per_robot[rkey]["qpos_mae"].append(float(np.abs(pred_seq[:, 6:] - gt_seq[:, 6:]).mean()))
+                per_robot[rkey]["trans_mae"].append(fhlt(pred_seq, gt_seq))
+                per_robot[rkey]["rot_mae"].append(fhlr(pred_seq, gt_seq))
+                per_robot[rkey]["fid"].append(fid(pred_seq, gt_seq))
+                per_robot[rkey]["smooth"].append(smoothness_l2(pred_seq))
+                per_robot[rkey]["drift"].append(rollout_drift(pred_seq, gt_seq))
+                if first_pred_seq is None:
+                    first_pred_seq, first_gt_seq = pred_seq, gt_seq
 
             if i % args.render_every == 0:
                 obj_local = pc[0].cpu().numpy()
                 render_hand_object_sequence(
-                    hand_seq_gt=gt_seq,
-                    hand_seq_pred=pred_seq,
+                    hand_seq_gt=first_gt_seq if first_gt_seq is not None else np.zeros((1, 7), dtype=np.float32),
+                    hand_seq_pred=first_pred_seq if first_pred_seq is not None else np.zeros((1, 7), dtype=np.float32),
                     object_pose_seq=obj_pose,
                     object_points_local=obj_local,
                     save_path=os.path.join(args.render_dir, f"vae_seq_{i:05d}.png"),
                     stride=args.render_stride,
                 )
 
-    print("===== VAE Eval (UniHM-compatible + extra) =====")
-    for k, v in metrics.items():
-        print(f"{k}: {float(np.mean(v)) if v else float('nan'):.6f}")
+    print("===== VAE Eval by Robot (UniHM-compatible + extra) =====")
+    print("[note] qpos_mae is in native robot joint units (typically radians).")
+    print("[note] trans_mae is typically meters; rot_mae is typically radians.")
+    print("[note] mpjpe_legacy is not true 3D-joint MPJPE (kept only for backward comparison).")
+    macro = {m: [] for m in metric_names}
+    for rkey in present_keys:
+        vals = per_robot[rkey]
+        print(f"\n[{rkey}]")
+        for m in metric_names:
+            mv = float(np.mean(vals[m])) if len(vals[m]) > 0 else float("nan")
+            print(f"{m}: {mv:.6f}")
+            if np.isfinite(mv):
+                macro[m].append(mv)
+
+    print("\n[macro_avg]")
+    for m in metric_names:
+        print(f"{m}: {float(np.mean(macro[m])) if len(macro[m]) > 0 else float('nan'):.6f}")
 
 
 if __name__ == "__main__":
@@ -100,5 +163,7 @@ if __name__ == "__main__":
     p.add_argument("--render-dir", type=str, default="/data1/jiaozx/UniHM/renders/vae")
     p.add_argument("--render-every", type=int, default=100)
     p.add_argument("--render-stride", type=int, default=5)
+    p.add_argument("--eval-stage", type=str, default="auto", choices=["auto", "ref", "robot"],
+                   help="auto: infer from ckpt training_stage; ref: eval mano/contact; robot: eval robot decoder outputs.")
     args = p.parse_args()
     evaluate(args)

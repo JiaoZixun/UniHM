@@ -85,6 +85,20 @@ def render_video(npz_path: str, out_dir: str, fps: int = 20, stride: int = 1, ma
     os.makedirs(out_dir, exist_ok=True)
     out_video = os.path.join(out_dir, f"{stem}_gt_alignment.mp4")
 
+    pose_frame = raw["object_pose_frame"].item() if "object_pose_frame" in raw else "unknown"
+    print(f"[frame] {stem} object_pose_frame={pose_frame}")
+    if "contact_median_camera" in raw and "contact_median_world" in raw:
+        print(
+            f"[contact] {stem} median_min_dist(camera/world)="
+            f"{float(raw['contact_median_camera']):.4f}/{float(raw['contact_median_world']):.4f}"
+        )
+    if "contact_min_dist" in raw:
+        cmd = raw["contact_min_dist"]
+        print(
+            f"[contact] {stem} chosen(min/median/p95/max)="
+            f"{float(np.min(cmd)):.4f}/{float(np.median(cmd)):.4f}/{float(np.percentile(cmd, 95)):.4f}/{float(np.max(cmd)):.4f}"
+        )
+
     # Motion diagnostics: verify each modality is changing over time.
     hand_center = hand_joints.mean(axis=1)
     hand_m = _motion_ratio(hand_center)
@@ -94,6 +108,13 @@ def render_video(npz_path: str, out_dir: str, fps: int = 20, stride: int = 1, ma
         f"[motion] {stem} hand(mean/max/moving_ratio)={hand_m[0]:.6f}/{hand_m[1]:.6f}/{hand_m[2]:.3f}, "
         f"object={obj_m[0]:.6f}/{obj_m[1]:.6f}/{obj_m[2]:.3f}"
     )
+    if pose_frame == "grasped_object_local" and "object_pose_world" in raw:
+        obj_world = raw["object_pose_world"][:, int(ds["grasped_obj_idx"]), 4:7]
+        obj_world_m = _motion_ratio(obj_world)
+        print(
+            f"[motion] {stem} object_world(mean/max/moving_ratio)="
+            f"{obj_world_m[0]:.6f}/{obj_world_m[1]:.6f}/{obj_world_m[2]:.3f}"
+        )
     for alias, ee in ee_data.items():
         ee_center = ee.mean(axis=1)
         ee_m = _motion_ratio(ee_center)

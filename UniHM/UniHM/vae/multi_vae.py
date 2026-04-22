@@ -51,13 +51,29 @@ class MultiDecoderVAE(nn.Module):
         hidden_dim: int,
         latent_dim: int,
         decoder_out_dims: List[int],
+        contact_obj_dim: int = 0,
+        contact_hand_dim: int = 0,
     ):
         super().__init__()
         self.latent_dim = latent_dim
+        self.contact_obj_dim = int(contact_obj_dim)
+        self.contact_hand_dim = int(contact_hand_dim)
+        self.mano_dim = int(mano_dim)
         self.teacher_encoder = TeacherFusionEncoder(mano_dim, object_dim, hidden_dim, latent_dim)
         self.decoders = nn.ModuleList([
             MLPDecoder(latent_dim, hidden_dim, 2, hidden_dim, out_channels=d) for d in decoder_out_dims
         ])
+        self.ref_mano_decoder = MLPDecoder(latent_dim, hidden_dim, 2, hidden_dim, out_channels=mano_dim)
+        self.ref_contact_obj_decoder = (
+            MLPDecoder(latent_dim, hidden_dim, 2, hidden_dim, out_channels=self.contact_obj_dim)
+            if self.contact_obj_dim > 0
+            else None
+        )
+        self.ref_contact_hand_decoder = (
+            MLPDecoder(latent_dim, hidden_dim, 2, hidden_dim, out_channels=self.contact_hand_dim)
+            if self.contact_hand_dim > 0
+            else None
+        )
 
     def reparameterize(self, mu: torch.Tensor, logvar: torch.Tensor):
         std = torch.exp(0.5 * logvar)
@@ -72,6 +88,26 @@ class MultiDecoderVAE(nn.Module):
         z = self.reparameterize(mu, logvar)
         preds = self.decode_all(z)
         return {"mu": mu, "logvar": logvar, "z": z, "preds": preds}
+
+    def forward_ref(self, mano: torch.Tensor, object_feat: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """Reference phase: reconstruct mano and contact maps to fuse contact into latent."""
+        mu, logvar = self.teacher_encoder(mano, object_feat)
+        z = self.reparameterize(mu, logvar)
+        mano_rec = self.ref_mano_decoder(z).squeeze(-1)
+        contact_obj_logits = (
+            self.ref_contact_obj_decoder(z).squeeze(-1) if self.ref_contact_obj_decoder is not None else None
+        )
+        contact_hand_logits = (
+            self.ref_contact_hand_decoder(z).squeeze(-1) if self.ref_contact_hand_decoder is not None else None
+        )
+        return {
+            "mu": mu,
+            "logvar": logvar,
+            "z": z,
+            "mano_rec": mano_rec,
+            "contact_obj_logits": contact_obj_logits,
+            "contact_hand_logits": contact_hand_logits,
+        }
 
 
 def kl_loss(mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
