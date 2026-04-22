@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 from typing import Dict, List
 
@@ -64,7 +65,7 @@ def freeze_ref_and_encoder(model: MultiDecoderVAE):
 
 def run_ref_epoch(
     model, loader, device, beta_kl, w_mano, w_obj_contact, w_hand_contact,
-    max_contact_pos_weight, train=True, optim=None
+    max_contact_pos_weight, enable_obj_contact, enable_hand_contact, train=True, optim=None
 ):
     if train:
         model.train()
@@ -95,12 +96,12 @@ def run_ref_epoch(
             loss_mano = F.l1_loss(out["mano_rec"], mano_bt)
             loss_obj = (
                 balanced_bce_with_logits(out["contact_obj_logits"], contact_obj_bt, max_pos_weight=max_contact_pos_weight)
-                if out["contact_obj_logits"] is not None
+                if (enable_obj_contact and out["contact_obj_logits"] is not None)
                 else torch.tensor(0.0, device=device)
             )
             loss_hand = (
                 balanced_bce_with_logits(out["contact_hand_logits"], contact_hand_bt, max_pos_weight=max_contact_pos_weight)
-                if out["contact_hand_logits"] is not None
+                if (enable_hand_contact and out["contact_hand_logits"] is not None)
                 else torch.tensor(0.0, device=device)
             )
             kll = kl_loss(out["mu"], out["logvar"])
@@ -156,6 +157,7 @@ def run_robot_epoch(model, loader, device, present_keys, train=True, optim=None)
 def train(args):
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     train_loader, val_loader = build_seq_dataloaders(args.seq_glob, batch_size=args.batch_size, num_workers=args.num_workers)
+    os.makedirs(args.log_dir, exist_ok=True)
 
     first = next(iter(train_loader))
     mano_dim = int(first["mano_pose"].shape[-1])
@@ -167,33 +169,44 @@ def train(args):
         kk = next(a for a in aliases if a in sample_targets)
         out_dims.append(int(sample_targets[kk].shape[-1]))
 
+    use_obj_contact = args.contact_target in ["object", "both"]
+    use_hand_contact = args.contact_target in ["hand", "both"]
+
     model = MultiDecoderVAE(
         mano_dim=mano_dim,
         object_dim=6,
         hidden_dim=args.hidden_dim,
         latent_dim=args.latent_dim,
         decoder_out_dims=out_dims,
-        contact_obj_dim=args.contact_num_points,
-        contact_hand_dim=21 if args.contact_target in ["both", "hand"] else 0,
+        contact_obj_dim=args.contact_num_points if use_obj_contact else 0,
+        contact_hand_dim=21 if use_hand_contact else 0,
     ).to(device)
 
     # Stage 1: train ref (mano + contact) to inject contact-aware latent.
     ref_optim = torch.optim.AdamW(model.parameters(), lr=args.lr_ref, weight_decay=args.weight_decay)
     ref_hist = {"train_total": [], "val_total": []}
     best_ref = float("inf")
+    save_ref_ckpt = args.save_ref_ckpt
+    if save_ref_ckpt == "":
+        root, ext = os.path.splitext(args.save_ckpt)
+        save_ref_ckpt = f"{root}_ref{ext or '.pth'}"
     for epoch in range(1, args.ref_epochs + 1):
         tr = run_ref_epoch(
             model, tqdm(train_loader, desc=f"Ref train {epoch}", leave=False), device, args.beta_kl,
             args.w_mano, args.w_contact_obj,
-            args.w_contact_hand if args.contact_target in ["both", "hand"] else 0.0,
+            args.w_contact_hand if use_hand_contact else 0.0,
             args.max_contact_pos_weight,
+            use_obj_contact,
+            use_hand_contact,
             train=True, optim=ref_optim,
         )
         val_loss = run_ref_epoch(
             model, val_loader, device, args.beta_kl,
             args.w_mano, args.w_contact_obj,
-            args.w_contact_hand if args.contact_target in ["both", "hand"] else 0.0,
+            args.w_contact_hand if use_hand_contact else 0.0,
             args.max_contact_pos_weight,
+            use_obj_contact,
+            use_hand_contact,
             train=False,
         )
         ref_hist["train_total"].append(tr)
@@ -201,6 +214,19 @@ def train(args):
         print(f"[Ref] Epoch {epoch}: train={tr:.6f}, val={val_loss:.6f}")
         if val_loss < best_ref:
             best_ref = val_loss
+            os.makedirs(os.path.dirname(save_ref_ckpt), exist_ok=True)
+            torch.save({
+                "model": model.state_dict(),
+                "present_keys": present_keys,
+                "out_dims": out_dims,
+                "mano_dim": mano_dim,
+                "latent_dim": args.latent_dim,
+                "hidden_dim": args.hidden_dim,
+                "contact_obj_dim": args.contact_num_points if use_obj_contact else 0,
+                "contact_hand_dim": 21 if use_hand_contact else 0,
+                "training_stage": "ref",
+                "best_ref_val": best_ref,
+            }, save_ref_ckpt)
 
     # Stage 2: freeze ref and train robot decoders only.
     freeze_ref_and_encoder(model)
@@ -228,10 +254,14 @@ def train(args):
                 "mano_dim": mano_dim,
                 "latent_dim": args.latent_dim,
                 "hidden_dim": args.hidden_dim,
-                "contact_obj_dim": args.contact_num_points,
-                "contact_hand_dim": 21 if args.contact_target in ["both", "hand"] else 0,
+                "contact_obj_dim": args.contact_num_points if use_obj_contact else 0,
+                "contact_hand_dim": 21 if use_hand_contact else 0,
                 "training_stage": "robot_decoder",
             }, args.save_ckpt)
+    with open(os.path.join(args.log_dir, "vae_ref_history.json"), "w", encoding="utf-8") as f:
+        json.dump(ref_hist, f, indent=2)
+    with open(os.path.join(args.log_dir, "vae_robot_history.json"), "w", encoding="utf-8") as f:
+        json.dump(robot_hist, f, indent=2)
     plot_losses({"train_total": ref_hist["train_total"], "val_total": ref_hist["val_total"]},
                 os.path.join(args.log_dir, "vae_ref_losses.png"))
     plot_losses({"train_total": robot_hist["train_total"], "val_total": robot_hist["val_total"]},
@@ -258,6 +288,7 @@ if __name__ == "__main__":
     p.add_argument("--w-contact-obj", type=float, default=1.0)
     p.add_argument("--w-contact-hand", type=float, default=0.5)
     p.add_argument("--max-contact-pos-weight", type=float, default=50.0)
+    p.add_argument("--save-ref-ckpt", type=str, default="", help="Optional path to save best ref-stage checkpoint.")
     p.add_argument("--save-ckpt", type=str, default="/public/home/jiaozixun/UniHM/checkpoints/vae_shared_best.pth")
     p.add_argument("--log-dir", type=str, default="/public/home/jiaozixun/UniHM/logs")
     args = p.parse_args()
