@@ -72,6 +72,11 @@ def _decode_ee_from_qpos(
             "This usually happens in headless mode when URDF actors are not created."
         )
     robot = processor.robots[ridx]
+    if robot is None:
+        raise RuntimeError(
+            f"Robot articulation is unavailable for index={ridx}. "
+            "This robot is running in headless retargeting-only mode."
+        )
     retargeting = processor.retargetings[ridx]
     links = {l.name: l for l in robot.get_links()}
     target_names = list(getattr(retargeting.optimizer, "target_link_names", []) or [])
@@ -180,6 +185,17 @@ def evaluate(args):
             mano_model_dir=args.mano_model_dir if args.mano_model_dir else None,
         )
         robot_name_to_index = {rn: i for i, rn in enumerate(uniq_robot_names)}
+    unavailable_ee_keys = set()
+    if fk_processor is not None:
+        for rkey in need_fk_keys:
+            ridx = robot_name_to_index[_ROBOT_KEY_TO_NAME[rkey]]
+            if ridx >= len(fk_processor.robots) or fk_processor.robots[ridx] is None:
+                unavailable_ee_keys.add(rkey)
+        if len(unavailable_ee_keys) > 0:
+            print(
+                "[warn] EE visualization disabled for keys without loaded FK articulations: "
+                + ", ".join(sorted(unavailable_ee_keys))
+            )
 
     with torch.no_grad():
         for i, batch in enumerate(val_loader):
@@ -238,6 +254,8 @@ def evaluate(args):
                     pred_ee_by_robot = {}
                     for rkey, gt_seq in gt_by_robot.items():
                         if rkey not in _ROBOT_KEY_TO_NAME:
+                            continue
+                        if rkey in unavailable_ee_keys:
                             continue
                         ridx = robot_name_to_index[_ROBOT_KEY_TO_NAME[rkey]]
                         try:
