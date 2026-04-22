@@ -8,3 +8,5 @@ processed_dexycb
 gt_viz
 gt_videos
 aic_scripts
+logs
+checkpoints
