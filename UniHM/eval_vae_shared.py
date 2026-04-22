@@ -6,7 +6,7 @@ import torch
 from UniHM.SFT.utils import build_seq_dataloaders, DECODER_KEY_ALIASES, ROBOT_KEYS_ORDER
 from UniHM.vae.multi_vae import MultiDecoderVAE
 from UniHM.metrics.common_metrics import mpjpe, fhlt, fhlr, fid, smoothness_l2, rollout_drift
-from UniHM.visualization.training_viz import render_hand_object_sequence
+from UniHM.visualization.training_viz import render_hand_object_sequence, render_multi_robot_comparison_video
 
 
 def object_feature_from_pointcloud(pc: torch.Tensor) -> torch.Tensor:
@@ -91,6 +91,7 @@ def evaluate(args):
     metric_names = ["mpjpe_legacy", "qpos_mae", "trans_mae", "rot_mae", "fid", "smooth", "drift"]
     per_robot = {k: {m: [] for m in metric_names} for k in present_keys}
     os.makedirs(args.render_dir, exist_ok=True)
+    rendered_videos = 0
 
     with torch.no_grad():
         for i, batch in enumerate(val_loader):
@@ -108,12 +109,16 @@ def evaluate(args):
 
             # Evaluate every available robot decoder separately.
             first_pred_seq = first_gt_seq = None
+            gt_by_robot = {}
+            pred_by_robot = {}
             for j, y in enumerate(ys):
                 if y is None:
                     continue
                 pred_seq = preds[j].view(B, T, -1)[0].cpu().numpy()
                 gt_seq = y[0].cpu().numpy()
                 rkey = present_keys[j]
+                gt_by_robot[rkey] = gt_seq
+                pred_by_robot[rkey] = pred_seq
                 per_robot[rkey]["mpjpe_legacy"].append(mpjpe(pred_seq, gt_seq))
                 per_robot[rkey]["qpos_mae"].append(float(np.abs(pred_seq[:, 6:] - gt_seq[:, 6:]).mean()))
                 per_robot[rkey]["trans_mae"].append(fhlt(pred_seq, gt_seq))
@@ -134,6 +139,18 @@ def evaluate(args):
                     save_path=os.path.join(args.render_dir, f"vae_seq_{i:05d}.png"),
                     stride=args.render_stride,
                 )
+                if rendered_videos < args.render_max_videos and len(gt_by_robot) > 0:
+                    render_multi_robot_comparison_video(
+                        gt_by_robot=gt_by_robot,
+                        pred_by_robot=pred_by_robot,
+                        object_pose_seq=obj_pose,
+                        object_points_local=obj_local,
+                        save_path=os.path.join(args.render_dir, f"vae_compare_{i:05d}.mp4"),
+                        fps=args.render_fps,
+                        stride=args.render_stride,
+                        max_frames=args.render_max_frames,
+                    )
+                    rendered_videos += 1
 
     print("===== VAE Eval by Robot (UniHM-compatible + extra) =====")
     print("[note] qpos_mae is in native robot joint units (typically radians).")
@@ -163,6 +180,9 @@ if __name__ == "__main__":
     p.add_argument("--render-dir", type=str, default="/public/home/jiaozixun/UniHM/renders/vae")
     p.add_argument("--render-every", type=int, default=100)
     p.add_argument("--render-stride", type=int, default=5)
+    p.add_argument("--render-max-videos", type=int, default=5, help="Maximum number of comparison videos to render.")
+    p.add_argument("--render-fps", type=int, default=20, help="FPS for rendered comparison videos.")
+    p.add_argument("--render-max-frames", type=int, default=0, help="Maximum frames per video; 0 means all.")
     p.add_argument("--eval-stage", type=str, default="auto", choices=["auto", "ref", "robot"],
                    help="auto: infer from ckpt training_stage; ref: eval mano/contact; robot: eval robot decoder outputs.")
     args = p.parse_args()
