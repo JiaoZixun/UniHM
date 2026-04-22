@@ -88,7 +88,8 @@ def evaluate(args):
                 print(f"{k}: {float(np.mean(v)):.6f}")
         return
 
-    metrics = {"mpjpe": [], "fhlt": [], "fhlr": [], "fid": [], "smooth": [], "drift": []}
+    metric_names = ["mpjpe_legacy", "qpos_mae", "trans_mae", "rot_mae", "fid", "smooth", "drift"]
+    per_robot = {k: {m: [] for m in metric_names} for k in present_keys}
     os.makedirs(args.render_dir, exist_ok=True)
 
     with torch.no_grad():
@@ -105,38 +106,52 @@ def evaluate(args):
             preds = out["preds"]
             ys = resolve_targets(targets, present_keys, device)
 
-            # use first available hand to align with UniHM-style core metrics
-            pred_seq = gt_seq = None
+            # Evaluate every available robot decoder separately.
+            first_pred_seq = first_gt_seq = None
             for j, y in enumerate(ys):
                 if y is None:
                     continue
                 pred_seq = preds[j].view(B, T, -1)[0].cpu().numpy()
                 gt_seq = y[0].cpu().numpy()
-                break
-            if pred_seq is None:
-                continue
-
-            metrics["mpjpe"].append(mpjpe(pred_seq, gt_seq))
-            metrics["fhlt"].append(fhlt(pred_seq, gt_seq))
-            metrics["fhlr"].append(fhlr(pred_seq, gt_seq))
-            metrics["fid"].append(fid(pred_seq, gt_seq))
-            metrics["smooth"].append(smoothness_l2(pred_seq))
-            metrics["drift"].append(rollout_drift(pred_seq, gt_seq))
+                rkey = present_keys[j]
+                per_robot[rkey]["mpjpe_legacy"].append(mpjpe(pred_seq, gt_seq))
+                per_robot[rkey]["qpos_mae"].append(float(np.abs(pred_seq[:, 6:] - gt_seq[:, 6:]).mean()))
+                per_robot[rkey]["trans_mae"].append(fhlt(pred_seq, gt_seq))
+                per_robot[rkey]["rot_mae"].append(fhlr(pred_seq, gt_seq))
+                per_robot[rkey]["fid"].append(fid(pred_seq, gt_seq))
+                per_robot[rkey]["smooth"].append(smoothness_l2(pred_seq))
+                per_robot[rkey]["drift"].append(rollout_drift(pred_seq, gt_seq))
+                if first_pred_seq is None:
+                    first_pred_seq, first_gt_seq = pred_seq, gt_seq
 
             if i % args.render_every == 0:
                 obj_local = pc[0].cpu().numpy()
                 render_hand_object_sequence(
-                    hand_seq_gt=gt_seq,
-                    hand_seq_pred=pred_seq,
+                    hand_seq_gt=first_gt_seq if first_gt_seq is not None else np.zeros((1, 7), dtype=np.float32),
+                    hand_seq_pred=first_pred_seq if first_pred_seq is not None else np.zeros((1, 7), dtype=np.float32),
                     object_pose_seq=obj_pose,
                     object_points_local=obj_local,
                     save_path=os.path.join(args.render_dir, f"vae_seq_{i:05d}.png"),
                     stride=args.render_stride,
                 )
 
-    print("===== VAE Eval (UniHM-compatible + extra) =====")
-    for k, v in metrics.items():
-        print(f"{k}: {float(np.mean(v)) if v else float('nan'):.6f}")
+    print("===== VAE Eval by Robot (UniHM-compatible + extra) =====")
+    print("[note] qpos_mae is in native robot joint units (typically radians).")
+    print("[note] trans_mae is typically meters; rot_mae is typically radians.")
+    print("[note] mpjpe_legacy is not true 3D-joint MPJPE (kept only for backward comparison).")
+    macro = {m: [] for m in metric_names}
+    for rkey in present_keys:
+        vals = per_robot[rkey]
+        print(f"\n[{rkey}]")
+        for m in metric_names:
+            mv = float(np.mean(vals[m])) if len(vals[m]) > 0 else float("nan")
+            print(f"{m}: {mv:.6f}")
+            if np.isfinite(mv):
+                macro[m].append(mv)
+
+    print("\n[macro_avg]")
+    for m in metric_names:
+        print(f"{m}: {float(np.mean(macro[m])) if len(macro[m]) > 0 else float('nan'):.6f}")
 
 
 if __name__ == "__main__":
