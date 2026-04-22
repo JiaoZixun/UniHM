@@ -28,6 +28,27 @@ from utils.retargeting_processor import RetargetingProcessor
 from dex_retargeting.constants import RobotName, HandType
 
 
+def _load_grasped_object_points(object_mesh_file, grasp_idx: int, num_points: int) -> np.ndarray:
+    """Load grasped-object point cloud from points.xyz and downsample to fixed size."""
+    if isinstance(object_mesh_file, np.ndarray):
+        mesh_files = object_mesh_file.tolist()
+    else:
+        mesh_files = list(object_mesh_file)
+    grasp_mesh = mesh_files[grasp_idx]
+    xyz_path = os.path.join(os.path.dirname(grasp_mesh), "points.xyz")
+    pts = np.loadtxt(xyz_path).astype(np.float32)
+    if pts.ndim != 2 or pts.shape[1] != 3:
+        raise ValueError(f"Invalid point cloud shape from {xyz_path}: {pts.shape}")
+    if pts.shape[0] >= num_points:
+        idx = np.linspace(0, pts.shape[0] - 1, num_points, dtype=np.int64)
+        pts = pts[idx]
+    else:
+        rep = num_points // pts.shape[0]
+        rem = num_points % pts.shape[0]
+        pts = np.concatenate([np.tile(pts, (rep, 1)), pts[:rem]], axis=0)
+    return pts
+
+
 def _pose7_to_matrix(pose7: np.ndarray) -> np.ndarray:
     """DexYCB [qx,qy,qz,qw,x,y,z] -> 4x4 transform."""
     qx, qy, qz, qw, x, y, z = pose7.astype(np.float64)
@@ -112,6 +133,29 @@ def _align_world_data_to_grasped_object_frame(
     return object_pose_obj, mano_joint_obj
 
 
+def _build_contact_maps(
+    hand_joints_obj: np.ndarray,
+    obj_points_obj: np.ndarray,
+    contact_thr: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Build dense hand-object distance and contact maps in object frame.
+
+    Returns:
+        dist_map: (T, N, 21)
+        contact_obj_map: (T, N) point-wise contact labels
+        contact_hand_map: (T, 21) joint-wise contact labels
+    """
+    T = hand_joints_obj.shape[0]
+    N = obj_points_obj.shape[0]
+    dist_map = np.empty((T, N, hand_joints_obj.shape[1]), dtype=np.float32)
+    for t in range(T):
+        diff = obj_points_obj[:, None, :] - hand_joints_obj[t][None, :, :]
+        dist_map[t] = np.linalg.norm(diff, axis=-1).astype(np.float32)
+    contact_obj_map = (dist_map.min(axis=2) < contact_thr).astype(np.uint8)
+    contact_hand_map = (dist_map.min(axis=1) < contact_thr).astype(np.uint8)
+    return dist_map, contact_obj_map, contact_hand_map
+
+
 def process(args):
     os.makedirs(args.output_dir, exist_ok=True)
     dataset = DexYCBVideoDataset(args.dexycb_dir, hand_type=args.hand_type, filter_objects=[])
@@ -155,8 +199,14 @@ def process(args):
                     object_pose_camera, result["extrinsics"]
                 )
                 hand_joints_world = result["mano_joint_3d"]  # (T, 21, 3), world frame
+                grasped_obj_point3d = _load_grasped_object_points(
+                    result["object_mesh_file"], grasp_idx, args.contact_num_points
+                )
                 object_pose_obj, hand_joints_obj = _align_world_data_to_grasped_object_frame(
                     object_pose_world, hand_joints_world, grasp_idx, result
+                )
+                dist_map, contact_obj_map, contact_hand_map = _build_contact_maps(
+                    hand_joints_obj, grasped_obj_point3d, args.contact_map_threshold
                 )
 
                 min_dist_camera = _min_contact_distance(hand_joints_world, object_pose_camera, grasp_idx)
@@ -173,6 +223,10 @@ def process(args):
                 result["camera_pose_world"] = np.linalg.inv(result["extrinsics"])
                 result["mano_joint_3d_world"] = hand_joints_world
                 result["mano_joint_3d"] = hand_joints_obj
+                result["grasped_obj_point3d"] = grasped_obj_point3d
+                result["hand_obj_dist_map"] = dist_map
+                result["contact_obj_map"] = contact_obj_map
+                result["contact_hand_map"] = contact_hand_map
                 result["contact_min_dist_camera"] = min_dist_camera
                 result["contact_min_dist_world"] = min_dist_world
                 result["contact_min_dist_object"] = min_dist_obj
@@ -234,6 +288,18 @@ if __name__ == "__main__":
         type=float,
         default=0.008,
         help="Distance threshold (meters) for heuristic hand-object contact flag.",
+    )
+    p.add_argument(
+        "--contact-map-threshold",
+        type=float,
+        default=0.02,
+        help="Distance threshold (meters) for binary object/joint contact maps from dense dist map.",
+    )
+    p.add_argument(
+        "--contact-num-points",
+        type=int,
+        default=1024,
+        help="Number of grasped-object points used to build dense hand-object distance maps.",
     )
     args = p.parse_args()
     process(args)
