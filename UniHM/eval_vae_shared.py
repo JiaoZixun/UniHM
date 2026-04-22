@@ -286,8 +286,8 @@ if __name__ == "__main__":
     p.add_argument("--render-max-videos", type=int, default=5, help="Maximum number of comparison videos to render.")
     p.add_argument("--render-fps", type=int, default=20, help="FPS for rendered comparison videos.")
     p.add_argument("--render-max-frames", type=int, default=0, help="Maximum frames per video; 0 means all.")
-    p.add_argument("--mano-model-dir", type=str, default="", help="Optional MANO model dir for decoding 21 joints.")
-    p.add_argument("--urdf-dir", type=str, default="", help="Optional URDF root for robot FK decoding.")
+    p.add_argument("--mano-model-dir", type=str, default="/public/home/jiaozixun/UniHuman2Rob/manopth/mano/models", help="Optional MANO model dir for decoding 21 joints.")
+    p.add_argument("--urdf-dir", type=str, default="/public/home/jiaozixun/dex-retargeting/assets/robots/hands", help="Optional URDF root for robot FK decoding.")
     p.add_argument("--eval-stage", type=str, default="auto", choices=["auto", "ref", "robot"],
                    help="auto: infer from ckpt training_stage; ref: eval mano/contact; robot: eval robot decoder outputs.")
     args = p.parse_args()
