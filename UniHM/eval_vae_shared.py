@@ -65,6 +65,12 @@ def _decode_ee_from_qpos(
     qpos_seq: np.ndarray,
 ) -> np.ndarray:
     """Decode EE keypoints from qpos using loaded robot kinematics."""
+    if ridx >= len(processor.robots):
+        raise RuntimeError(
+            "Robot kinematics are unavailable for EE decoding "
+            f"(requested index={ridx}, loaded={len(processor.robots)}). "
+            "This usually happens in headless mode when URDF actors are not created."
+        )
     robot = processor.robots[ridx]
     retargeting = processor.retargetings[ridx]
     links = {l.name: l for l in robot.get_links()}
@@ -228,8 +234,11 @@ def evaluate(args):
                         if rkey not in _ROBOT_KEY_TO_NAME:
                             continue
                         ridx = robot_name_to_index[_ROBOT_KEY_TO_NAME[rkey]]
-                        gt_ee_by_robot[rkey] = _decode_ee_from_qpos(fk_processor, ridx, gt_seq)
-                        pred_ee_by_robot[rkey] = _decode_ee_from_qpos(fk_processor, ridx, pred_by_robot[rkey])
+                        try:
+                            gt_ee_by_robot[rkey] = _decode_ee_from_qpos(fk_processor, ridx, gt_seq)
+                            pred_ee_by_robot[rkey] = _decode_ee_from_qpos(fk_processor, ridx, pred_by_robot[rkey])
+                        except RuntimeError as err:
+                            print(f"[warn] Skip EE visualization for {rkey}: {err}")
 
                     if "mano_joint_3d_world" in batch:
                         mano_joints_world = batch["mano_joint_3d_world"][0].cpu().numpy()
