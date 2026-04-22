@@ -64,11 +64,18 @@ class SeqDataset(Dataset):
         grasped_with_obj_id = result.get("grasped_with_obj_id", "")
         text = f"grasp object id {grasped_with_obj_id}"  # kept as simple identifier text
         obj_pose_seq = torch.as_tensor(result.get("grasped_obj_pose"), dtype=torch.float32)  # (T, Dp)
+        contact_obj_map = result.get("contact_obj_map", None)  # (T, N)
+        contact_hand_map = result.get("contact_hand_map", None)  # (T, 21)
         targets: Dict[str, torch.Tensor] = {}
         for k, v in result.items():
             if k.endswith("_qpos"):
                 targets[k] = v.to(torch.float32)  # (T, Dk)
-        return {"mano_pose": mano, "x_input": x_input, "pointcloud": pointcloud, "object_pose_seq": obj_pose_seq, "text": text, "targets": targets}
+        item = {"mano_pose": mano, "x_input": x_input, "pointcloud": pointcloud, "object_pose_seq": obj_pose_seq, "text": text, "targets": targets}
+        if contact_obj_map is not None:
+            item["contact_obj_map"] = torch.as_tensor(contact_obj_map, dtype=torch.float32)
+        if contact_hand_map is not None:
+            item["contact_hand_map"] = torch.as_tensor(contact_hand_map, dtype=torch.float32)
+        return item
 
 
 def collate_seq(batch: List[Dict[str, any]]):
@@ -78,6 +85,8 @@ def collate_seq(batch: List[Dict[str, any]]):
     pcls = []
     texts: List[str] = []
     targets_collated: Dict[str, List[torch.Tensor]] = {}
+    contact_obj_maps = []
+    contact_hand_maps = []
 
     def sample_pointcloud(pc: torch.Tensor, n_points: int = N_POINTS) -> torch.Tensor:
         # pc: (N, 3)
@@ -108,6 +117,8 @@ def collate_seq(batch: List[Dict[str, any]]):
         m = b["mano_pose"]  # (T, Dm)
         x_in = b["x_input"]
         op = b["object_pose_seq"]  # (T, Dp)
+        com = b.get("contact_obj_map", None)  # (T, N)
+        chm = b.get("contact_hand_map", None)  # (T, 21)
         pc = b["pointcloud"]  # (N, 3)
         T = m.size(0)
         if T >= T_FIXED:
@@ -115,6 +126,10 @@ def collate_seq(batch: List[Dict[str, any]]):
             m = m[start:start + T_FIXED]
             x_in = x_in[start:start + T_FIXED]
             op = op[start:start + T_FIXED]
+            if com is not None:
+                com = com[start:start + T_FIXED]
+            if chm is not None:
+                chm = chm[start:start + T_FIXED]
             cropped_targets = {k: t[start:start + T_FIXED] for k, t in b["targets"].items()}
         else:
             pad = T_FIXED - T
@@ -126,6 +141,12 @@ def collate_seq(batch: List[Dict[str, any]]):
                 x_in = torch.cat([x_in, last_x], dim=0)
                 last_op = op[-1:].expand(pad, -1)
                 op = torch.cat([op, last_op], dim=0)
+                if com is not None:
+                    last_com = com[-1:].expand(pad, -1)
+                    com = torch.cat([com, last_com], dim=0)
+                if chm is not None:
+                    last_chm = chm[-1:].expand(pad, -1)
+                    chm = torch.cat([chm, last_chm], dim=0)
                 cropped_targets = {}
                 for k, t in b["targets"].items():
                     last_t = t[-1:].expand(pad, -1)
@@ -135,11 +156,19 @@ def collate_seq(batch: List[Dict[str, any]]):
                 m = torch.zeros((T_FIXED, m.size(-1)), dtype=m.dtype)
                 x_in = torch.zeros((T_FIXED, x_in.size(-1)), dtype=x_in.dtype)
                 op = torch.zeros((T_FIXED, op.size(-1)), dtype=op.dtype)
+                if com is not None:
+                    com = torch.zeros((T_FIXED, com.size(-1)), dtype=com.dtype)
+                if chm is not None:
+                    chm = torch.zeros((T_FIXED, chm.size(-1)), dtype=chm.dtype)
                 cropped_targets = {k: torch.zeros((T_FIXED, t.size(-1)), dtype=t.dtype) for k, t in b["targets"].items()}
 
         manos.append(m)
         x_inputs.append(x_in)
         objposes.append(op)
+        if com is not None:
+            contact_obj_maps.append(com)
+        if chm is not None:
+            contact_hand_maps.append(chm)
         pcls.append(sample_pointcloud(pc))
         texts.append(b["text"])
         for k, t in cropped_targets.items():
@@ -150,7 +179,12 @@ def collate_seq(batch: List[Dict[str, any]]):
     objpose = torch.stack(objposes, dim=0)        # (B, T_FIXED, Dp)
     pcl = torch.stack(pcls, dim=0)                # (B, N_POINTS, 3)
     targets_batch = {k: torch.stack(vs, dim=0) for k, vs in targets_collated.items()}
-    return {"mano_pose": mano,"x_input": x_input_batch, "object_pose_seq": objpose, "pointcloud": pcl, "text": texts, "targets": targets_batch}
+    batch_out = {"mano_pose": mano,"x_input": x_input_batch, "object_pose_seq": objpose, "pointcloud": pcl, "text": texts, "targets": targets_batch}
+    if len(contact_obj_maps) == len(batch):
+        batch_out["contact_obj_map"] = torch.stack(contact_obj_maps, dim=0)
+    if len(contact_hand_maps) == len(batch):
+        batch_out["contact_hand_map"] = torch.stack(contact_hand_maps, dim=0)
+    return batch_out
 
 
 def build_seq_dataloaders_list(train_list: str, valid_list: str, batch_size: int = 32, num_workers: int = 4):
@@ -220,5 +254,4 @@ def build_model_and_meta(device: torch.device, single_dataset_path: str, qwen_id
         qwen_dtype=torch.bfloat16,
     )
     return model, present_robot_keys, vqvae_kwargs
-
 
