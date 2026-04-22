@@ -63,7 +63,7 @@ class RetargetingProcessor:
         self.hand_type = hand_type
         self.sapien_joint_names: List[List[str]] = []
         self.robot_file_names: List[str] = []
-        self.robots = []
+        self.robots: List[Optional[sapien.Articulation]] = []
         loader = None
         if self.scene is not None:
             loader = self.scene.create_urdf_loader()
@@ -81,6 +81,7 @@ class RetargetingProcessor:
             self.retargetings.append(retargeting)
 
             if loader is None:
+                self.robots.append(None)
                 sapien_joint_names = list(retargeting.joint_names)
                 retarget2sapien = np.arange(len(sapien_joint_names), dtype=int)
             else:
@@ -97,6 +98,7 @@ class RetargetingProcessor:
                     if "libqt5core" not in str(err).lower():
                         raise
                     self.headless_mode = True
+                    self.robots.append(None)
                     print(
                         f"[RetargetingProcessor] Qt runtime unavailable while loading {config.urdf_path}; "
                         "falling back to headless joint mapping for this robot."
